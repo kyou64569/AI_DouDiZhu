@@ -25,15 +25,31 @@ if errorlevel 1 goto npm_not_found
 call :log "[OK] node found"
 call :log "[OK] npm found"
 
-REM --- Single instance: if any front-end port (5173..5182) already listens, just open browser ---
-call :scan_front_port
-if not "%FRONT_PORT%"=="" goto already_running
+REM --- Single instance: only when a REAL Vite page (this project) is already serving AND backend healthy ---
+set API_PROBE_PORT=
+if exist "%~dp0.apiport" for /f "delims=" %%p in (%~dp0.apiport) do set "API_PROBE_PORT=%%p"
+if "%API_PROBE_PORT%"=="" set "API_PROBE_PORT=8787"
 
-REM --- 端口占用处理（2026-08-15 起）：
-REM     不再强制 taskkill 占用进程 —— 被占用的端口自动跳转：
-REM     - 前端：Vite strictPort=false 自动换 5174/5175...
-REM     - 后端：scripts/pick-api-port.mjs 预探测 + server EADDRINUSE 兜底重试，写入 .apiport 联动 ---
-call :log "[INFO] ports will auto-skip if occupied (no force-kill)"
+call :scan_front_port
+if "%FRONT_PORT%"=="" goto start_fresh
+
+REM Found a Vite page port — verify backend is actually healthy before assuming existing service
+call :probe_backend_health
+if "%BACKEND_OK%"=="1" (
+  call :log "[INFO] existing service healthy (front=%FRONT_PORT%, api=%API_PROBE_PORT%), opening browser"
+  echo [INFO] Service already running. Opening game page.
+  start "" "http://localhost:%FRONT_PORT%"
+  goto end
+)
+
+REM Vite page found but backend unhealthy or absent: stale partial state, do not skip
+call :log "[WARN] Vite page at %FRONT_PORT% but backend %API_PROBE_PORT% not healthy, treating as stale"
+echo [WARN] 前端 %FRONT_PORT% 有 Vite 页面，但后端 %API_PROBE_PORT% 不健康或不存在。
+echo [WARN] 可能是上一次的残留进程。建议手动清理（任务管理器结束 node.exe）后重试。
+echo [WARN] 当前按单实例逻辑跳过启动，但服务可能不可用。
+
+:start_fresh
+REM (此处继续首次启动流程：deps_ok → npm run dev → wait_loop → open_browser)
 
 REM --- First-time dependency install ---
 if exist "node_modules" goto deps_ok
@@ -70,12 +86,6 @@ call :log "[ERROR] npm not found"
 echo [ERROR] npm not found. Please reinstall Node.js with npm.
 goto end
 
-:already_running
-call :log "[INFO] front-end port %FRONT_PORT% already listening, opening browser"
-echo [INFO] Service already running. Opening game page.
-start "" "http://localhost:%FRONT_PORT%"
-goto end
-
 :open_browser
 echo [OK] Service ready. Opening game page at http://localhost:%FRONT_PORT%...
 call :log "[OK] service ready, front port %FRONT_PORT%"
@@ -103,15 +113,40 @@ REM ============================================================
 REM Subroutines (must stay at the end of the file)
 REM ============================================================
 
-REM --- Scan front-end ports 5173..5182; sets FRONT_PORT (empty if none listening) ---
+REM --- Scan for THIS project's Vite dev page (5173..5182): sets FRONT_PORT to first port whose HTTP response is a Vite page (contains /src/main.tsx); empty if none ---
 :scan_front_port
-set FRONT_PORT=5173
-:scan_front_loop
-netstat -ano 2>nul | findstr /C:":%FRONT_PORT% " | findstr "LISTENING" >nul
-if not errorlevel 1 goto :eof
-set /a FRONT_PORT+=1
-if %FRONT_PORT% leq 5182 goto scan_front_loop
 set FRONT_PORT=
+for /L %%p in (5173,1,5182) do (
+  call :is_vite_port %%p
+  if not "%FRONT_PORT%"=="" goto :eof
+)
+goto :eof
+
+REM --- Check if port %1 serves the Vite dev page (HTML contains /src/main.tsx); sets FRONT_PORT=%1 if yes ---
+REM 注意用 localhost 而非 127.0.0.1：Vite 5 可能只绑定 IPv6(::1)，127.0.0.1 会连接失败
+:is_vite_port
+curl -s -m 1 "http://localhost:%1/" 1>"%TEMP%\ddz_vite_page.txt" 2>nul
+if errorlevel 1 (
+  del "%TEMP%\ddz_vite_page.txt" 2>nul
+  goto :eof
+)
+findstr /C:"src/main.tsx" "%TEMP%\ddz_vite_page.txt" >nul 2>nul
+if not errorlevel 1 set "FRONT_PORT=%1"
+del "%TEMP%\ddz_vite_page.txt" 2>nul
+goto :eof
+
+REM --- Probe backend /api/health: sets BACKEND_OK=1 if HTTP 200 within 5s, else 0 ---
+:probe_backend_health
+set BACKEND_OK=0
+if "%API_PROBE_PORT%"=="" set "API_PROBE_PORT=8787"
+curl -s -o NUL -w "%%{http_code}" -m 5 "http://localhost:%API_PROBE_PORT%/api/health" 1>"%TEMP%\ddz_probe_hc.txt" 2>nul
+if errorlevel 1 (
+  del "%TEMP%\ddz_probe_hc.txt" 2>nul
+  goto :eof
+)
+set /p HC=<"%TEMP%\ddz_probe_hc.txt"
+if "%HC%"=="200" set BACKEND_OK=1
+del "%TEMP%\ddz_probe_hc.txt" 2>nul
 goto :eof
 
 :log

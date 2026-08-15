@@ -22,6 +22,12 @@ function resolveApiPort(): number {
 
 const API_PORT: number = resolveApiPort();
 
+/** 前端 dev 端口：可用 VITE_PORT 环境变量指定（如 `VITE_PORT=5500 npm run dev`）；被占用时 strictPort:false 自动换下一个可用端口 */
+const WEB_PORT: number = (() => {
+  const port = Number(process.env.VITE_PORT ?? 5173);
+  return (Number.isInteger(port) && port > 0 && port < 65536) ? port : 5173;
+})();
+
 export default defineConfig({
   plugins: [react()],
   resolve: {
@@ -30,7 +36,7 @@ export default defineConfig({
     },
   },
   server: {
-    port: 5173,
+    port: WEB_PORT,
     strictPort: false,
     proxy: {
       // 开发期把 /api 反代到 Node 代理，绕开浏览器 CORS

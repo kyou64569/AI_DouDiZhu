@@ -286,6 +286,103 @@ export function clearAllAppData(): number {
   return count;
 }
 
+// =============================================================================
+// 配置导出 / 导入（方案 C：跨端口 / 跨浏览器迁移与备份）
+// =============================================================================
+
+/** 导出文件的应用标识（导入时校验，防止误导入其他应用的文件） */
+const EXPORT_APP: string = 'ai-doudizhu';
+/** 导出文件结构版本 */
+const EXPORT_VERSION: number = 1;
+
+/** 参与导出的全部持久化键 */
+const EXPORT_KEYS: readonly StorageKey[] = [
+  STORAGE_KEYS.CONFIGS,
+  STORAGE_KEYS.PLAYERS,
+  STORAGE_KEYS.SETTINGS,
+  STORAGE_KEYS.SOUND,
+  STORAGE_KEYS.HISTORY,
+  STORAGE_KEYS.VERSION,
+  STORAGE_KEYS.KEY_WARNING_ACK,
+];
+
+/**
+ * 导出全部持久化数据为 JSON 字符串（含模型配置、AI 玩家、设置、历史）。
+ * 用于端口漂移 / 换浏览器 / 清缓存后的迁移与备份。
+ *
+ * ⚠️ 导出文件包含 API Key 明文，请妥善保管，勿上传到 git / 公开位置。
+ *
+ * @returns JSON 字符串（键值均为原始存储字符串）
+ */
+export function exportAllAppData(): string {
+  const data: Record<string, string> = {};
+  for (const key of EXPORT_KEYS) {
+    const raw: string | null = readRaw(key);
+    if (raw !== null) {
+      data[key] = raw;
+    }
+  }
+  return JSON.stringify(
+    {
+      app: EXPORT_APP,
+      exportVersion: EXPORT_VERSION,
+      exportedAt: new Date().toISOString(),
+      data,
+    },
+    null,
+    2,
+  );
+}
+
+/**
+ * 导入持久化数据（exportAllAppData 的产物）。
+ * 校验通过后写回 localStorage；调用方随后应刷新页面使各 store 重新加载。
+ *
+ * @param jsonText 导出文件内容
+ * @returns `{ ok, message }`；ok 为 true 表示已写回
+ */
+export function importAllAppData(jsonText: string): { ok: boolean; message: string } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(jsonText);
+  } catch {
+    return { ok: false, message: '文件不是合法的 JSON' };
+  }
+  if (!isPlainObject(parsed)) {
+    return { ok: false, message: '文件结构不正确（顶层应为对象）' };
+  }
+  if (parsed.app !== EXPORT_APP) {
+    return { ok: false, message: '不是本应用（AI 斗地主）的配置导出文件' };
+  }
+  if (parsed.exportVersion !== EXPORT_VERSION) {
+    return { ok: false, message: `导出文件版本 ${parsed.exportVersion} 不兼容，当前仅支持版本 ${EXPORT_VERSION}` };
+  }
+  const data: unknown = parsed.data;
+  if (!isPlainObject(data)) {
+    return { ok: false, message: '文件中缺少 data 段' };
+  }
+
+  // 先清空所有导出键，避免残留旧数据导致状态不一致
+  for (const key of EXPORT_KEYS) {
+    removeItem(key);
+  }
+
+  let written: number = 0;
+  for (const [key, value] of Object.entries(data)) {
+    // 只允许导入预定义的键，防止恶意数据注入
+    if (typeof value !== 'string' || !EXPORT_KEYS.includes(key as StorageKey)) {
+      continue;
+    }
+    if (writeRaw(key, value)) {
+      written += 1;
+    }
+  }
+  if (written === 0) {
+    return { ok: false, message: '文件中没有任何可导入的数据' };
+  }
+  return { ok: true, message: `已导入 ${written} 项数据，即将刷新页面生效` };
+}
+
 /** 类型守卫工具：判断是否为非空字符串 */
 export function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;

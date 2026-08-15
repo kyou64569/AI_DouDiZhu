@@ -53,6 +53,10 @@ vite.config.ts.timestamp-*.mjs
 docs/reports/
 docs/code-review-*.md
 
+# 配置导出文件（含 API Key，禁止入库；导出默认文件名 doudizhu-config-*.json）
+doudizhu-config-*.json
+*.config-export.json
+
 # 编辑器与系统
 .vscode/*
 !.vscode/extensions.json

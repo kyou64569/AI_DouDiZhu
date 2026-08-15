@@ -10,11 +10,12 @@
  * - API Key 输入框默认密文（复用 Input 的 password 显示/隐藏能力）
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
 import Button from '@/components/common/Button';
 import Input from '@/components/common/Input';
 import Modal from '@/components/common/Modal';
 import Select, { type SelectOption } from '@/components/common/Select';
+import { toast } from '@/components/common/Toast';
 import { cn } from '@/utils/cn';
 import { formatDateTime, formatLatency, maskKeyForDisplay } from '@/utils/format';
 import type { ModelItem } from '@/types/api';
@@ -37,7 +38,12 @@ import {
   DEFAULT_SPECTATE_TIMEOUT_MS,
   useSettingsStore,
 } from '@/store/settingsStore';
-import { acknowledgeKeyWarning, isKeyWarningAcknowledged } from '@/store/persist';
+import {
+  acknowledgeKeyWarning,
+  exportAllAppData,
+  importAllAppData,
+  isKeyWarningAcknowledged,
+} from '@/store/persist';
 
 /** 模型选择器的属性 */
 interface ModelPickerProps {
@@ -310,6 +316,42 @@ export function ModelConfigPage(): JSX.Element {
   const [draft, setDraft] = useState<ModelConfigInput>({ ...EMPTY_CONFIG_INPUT });
   const [formError, setFormError] = useState<string>('');
   const [deleteTarget, setDeleteTarget] = useState<ModelConfig | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  /** 导出全部配置为 JSON 文件（含 API Key，提示妥善保管） */
+  const handleExport = (): void => {
+    const json: string = exportAllAppData();
+    const blob = new Blob([json], { type: 'application/json' });
+    const url: string = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const d: Date = new Date();
+    const pad = (n: number): string => String(n).padStart(2, '0');
+    a.download = `doudizhu-config-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    toast.success('配置已导出。文件含 API Key，请勿上传到 git 或公开位置');
+  };
+
+  /** 导入配置文件：校验后写回 localStorage，刷新页面生效 */
+  const handleImportFile = (e: ChangeEvent<HTMLInputElement>): void => {
+    const file: File | undefined = e.target.files?.[0];
+    e.target.value = ''; // 允许重复选择同一文件
+    if (!file) return;
+    const reader: FileReader = new FileReader();
+    reader.onload = (): void => {
+      const result = importAllAppData(String(reader.result ?? ''));
+      if (result.ok) {
+        toast.success(result.message);
+        window.setTimeout(() => window.location.reload(), 1500);
+      } else {
+        toast.error(result.message);
+      }
+    };
+    reader.readAsText(file);
+  };
 
   /** 表单当前使用的临时状态 key：编辑态用配置 id，新增态用草稿键 */
   const formKey: string = editingId ?? DRAFT_KEY;
@@ -456,7 +498,22 @@ export function ModelConfigPage(): JSX.Element {
             </p>
           </div>
         </div>
-        <Button onClick={openCreate}>+ 新增配置</Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="ghost" onClick={handleExport}>
+            导出配置
+          </Button>
+          <Button variant="ghost" onClick={() => fileInputRef.current?.click()}>
+            导入配置
+          </Button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="application/json,.json"
+            className="hidden"
+            onChange={handleImportFile}
+          />
+          <Button onClick={openCreate}>+ 新增配置</Button>
+        </div>
       </div>
 
       {/* 全局：AI 决策超时 */}
