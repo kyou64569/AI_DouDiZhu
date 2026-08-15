@@ -57,6 +57,9 @@ docs/code-review-*.md
 doudizhu-config-*.json
 *.config-export.json
 
+# 项目文档（PRD 不入库）
+docs/PRD.md
+
 # 编辑器与系统
 .vscode/*
 !.vscode/extensions.json
