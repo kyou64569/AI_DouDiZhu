@@ -59,7 +59,7 @@ import { useConfigStore } from './configStore';
 import { useHistoryStore } from './historyStore';
 import { resolveTimeoutMs } from './settingsStore';
 import { isThinkingEnabled } from '@/ai/thinking';
-import { logSink } from './logStore';
+import { logSink, useLogStore } from './logStore';
 import { playSfx, startBackground, stopBackground, speak } from '@/audio/soundService';
 import { describePlay, describePass } from '@/audio/cardSpeech';
 import {
@@ -750,6 +750,8 @@ export const useGameStore = create<GameStoreState>((set, get) => {
 
       // 进入新对局前先停掉上一局可能残留的背景音
       stopBackground();
+      // 新开局：清空上一局残留的 AI 思考日志（修复：观战模式进入牌桌后残留上次内容）
+      useLogStore.getState().clear();
 
       const players: [Player, Player, Player] = buildPlayers(room);
       const deal = createShuffledDeal(Math.random);
@@ -820,6 +822,8 @@ export const useGameStore = create<GameStoreState>((set, get) => {
         // 先把「最后一手叫分」落库，避免定地主时丢失该条记录（UI 叫分历史需要完整）
         set({ bidHistory, highestBid });
         if (result.needRedeal) {
+          // 流局重发/强制地主 = 新一局开始：一并清空叫分阶段的思考日志
+          useLogStore.getState().clear();
           const redealCount: number = st.redealCount + 1;
           if (redealCount > MAX_REDEAL) {
             // 兜底：连续流局过多，强制当前最后一个叫分者当地主、底分 1

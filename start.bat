@@ -2,10 +2,9 @@
 title AI DouDiZhu Launcher
 cd /d "%~dp0"
 
-REM === Relaunch under cmd /k so the window never auto-closes ===
-if "%~1"=="keep" goto main
-start "AI DouDiZhu Launcher" cmd /k "call "%~f0" keep"
-exit /b
+REM 双击 .bat 时 Windows 会自动开 cmd 窗口运行,末尾 pause 即可保持窗口,
+REM 不需要再嵌套 start cmd /k "call ..."（否则 start 命令 + start.bat 文件名 + 路径含空格
+REM 会触发 cmd 解析把 start.bat 拆成 'rt' 报错）。
 
 :main
 echo ============================================================

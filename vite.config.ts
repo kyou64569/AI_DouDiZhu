@@ -22,10 +22,17 @@ function resolveApiPort(): number {
 
 const API_PORT: number = resolveApiPort();
 
-/** 前端 dev 端口：可用 VITE_PORT 环境变量指定（如 `VITE_PORT=5500 npm run dev`）；被占用时 strictPort:false 自动换下一个可用端口 */
+/**
+ * 前端 dev 端口：默认 5174（让出 5173 给用户的其他本地项目，如 AI 盲盒等）。
+ * 被占用时 strictPort:false 自动跳下一个。可用 VITE_PORT 环境变量强制指定（如 VITE_PORT=5173）。
+ */
 const WEB_PORT: number = (() => {
-  const port = Number(process.env.VITE_PORT ?? 5173);
-  return (Number.isInteger(port) && port > 0 && port < 65536) ? port : 5173;
+  const raw = process.env.VITE_PORT;
+  if (raw !== undefined && raw !== '') {
+    const port = Number(raw);
+    if (Number.isInteger(port) && port > 0 && port < 65536) return port;
+  }
+  return 5174;
 })();
 
 export default defineConfig({
