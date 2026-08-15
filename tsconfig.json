@@ -18,6 +18,7 @@
 
     /* Linting —— 严格模式，规则引擎的穷尽判断依赖它 */
     "strict": true,
+    "ignoreDeprecations": "6.0",
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
