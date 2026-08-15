@@ -1,0 +1,62 @@
+# 依赖
+node_modules/
+.pnp/
+.pnp.js
+
+# 构建产物
+dist/
+dist-ssr/
+build/
+.tsbuild/
+*.tsbuildinfo
+
+# 环境变量（可能含密钥）
+.env
+.env.local
+.env.*.local
+
+# 测试与覆盖率
+coverage/
+.nyc_output/
+
+# 日志
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+logs/
+*.log
+
+# 临时自验脚本（根目录一次性验收/冒烟脚本，2026-08-13 起统一忽略）
+/*.mts
+/*.mjs
+*.tmp.mts
+verify.tmp.mts
+
+# 自验输出与运行日志（根目录）
+/*_out.txt
+/*_regress.txt
+/*_verify.out
+/vitest_lead.txt
+vite.config.ts.timestamp-*.mjs
+
+# 项目内 npm 缓存（不应存在）
+.npm-cache/
+
+# 工具数据目录（WorkBuddy 项目记忆/日志：含本机路径与过程记录，不入库）
+.workbuddy/
+
+# 端口联动文件（pick-api-port.mjs 运行时生成，机器相关）
+.apiport
+
+# 开发中间过程文档与代码审查报告（不入库，2026-08-15 起）
+docs/reports/
+docs/code-review-*.md
+
+# 编辑器与系统
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+*.swp

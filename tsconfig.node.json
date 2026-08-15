@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    /* 被 tsconfig.json 引用，必须 composite 且允许 emit */
+    "composite": true,
+    "tsBuildInfoFile": "./.tsbuild/tsconfig.node.tsbuildinfo",
+    "outDir": "./.tsbuild/node",
+
+    "target": "ES2022",
+    "lib": ["ES2023"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+
+    "moduleResolution": "bundler",
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+
+    "types": ["node"]
+  },
+  "include": ["vite.config.ts", "tailwind.config.ts", "server"]
+}

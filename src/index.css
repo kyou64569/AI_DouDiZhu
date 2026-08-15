@@ -1,0 +1,206 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* 全站深色主题（与牌桌配套）：原生控件（下拉、滚动条）随之深色 */
+    color-scheme: dark;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    font-family:
+      'PingFang SC',
+      'Hiragino Sans GB',
+      'Microsoft YaHei',
+      -apple-system,
+      BlinkMacSystemFont,
+      'Segoe UI',
+      sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    @apply bg-slate-950 text-slate-200;
+    /* 顶部一缕绒布氛围光，与牌桌同源但更克制 */
+    background-image: radial-gradient(
+      ellipse 85% 42% at 50% -6%,
+      rgba(21, 112, 63, 0.22),
+      transparent 72%
+    );
+    background-attachment: fixed;
+  }
+
+  /* 移动端点击不出现蓝色高亮 */
+  * {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* 牌面数字使用等宽感更强的字体，避免 10 与 J 宽度跳动 */
+  .card-face-text {
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+  }
+}
+
+@layer components {
+  /* 细滚动条，用于思考日志面板等长列表 */
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(100, 116, 139, 0.45) transparent;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: rgba(100, 116, 139, 0.45);
+    border-radius: 3px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(100, 116, 139, 0.7);
+  }
+
+  /* 手牌横向滑动容器（移动端，REQ-U3） */
+  .hand-scroll {
+    overflow-x: auto;
+    overflow-y: visible;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /**
+   * 牌桌绒面背景。
+   * 多层径向渐变叠加：
+   *   1. 中心光斑（牌桌正中的主照明，衬托中央出牌区）
+   *   2. 顶部天光（绒布受光面）
+   *   3. 底部/四周暗角（沉浸式收边）
+   *   4. 基础绒布色（绿）
+   *   5. SVG feTurbulence 噪点（织物纹理）
+   */
+  .table-felt {
+    position: relative;
+    isolation: isolate;
+    background-color: #0b3d26;
+    background-image:
+      radial-gradient(ellipse 115% 88% at 50% 40%, rgba(52, 148, 92, 0.62) 0%, rgba(15, 81, 50, 0.32) 45%, transparent 72%),
+      radial-gradient(ellipse 85% 60% at 50% -12%, rgba(255, 255, 255, 0.1), transparent 62%),
+      radial-gradient(ellipse 150% 115% at 50% 112%, rgba(0, 0, 0, 0.52), transparent 58%),
+      linear-gradient(180deg, #125a38 0%, #0f5132 52%, #0b3d26 100%);
+  }
+
+  /* 织物噪点层（叠加在渐变之上、内容之下） */
+  .table-felt::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.045'/%3E%3C/svg%3E");
+  }
+
+  /* 玻璃拟态面板：半透明深色 + 背景模糊 + 顶部内高光，用于牌桌浮层 */
+  .glass-panel {
+    background-color: rgba(6, 23, 15, 0.55);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.09),
+      0 8px 32px rgba(0, 0, 0, 0.35);
+  }
+
+  /* 牌背：深蓝底 + 金银编织菱形纹理 + 中央金点 */
+  .card-back {
+    background-color: #1e3a8a;
+    background-image:
+      repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.07) 0 1.5px, transparent 1.5px 7px),
+      repeating-linear-gradient(-45deg, rgba(255, 255, 255, 0.07) 0 1.5px, transparent 1.5px 7px),
+      radial-gradient(circle at 50% 50%, rgba(251, 191, 36, 0.9) 0 2px, transparent 3px),
+      radial-gradient(circle at 50% 50%, rgba(251, 191, 36, 0.16) 0 9px, transparent 12px);
+  }
+
+  /* 金色渐变文字（「地主」「倍数」等强调） */
+  .text-gold-gradient {
+    background: linear-gradient(135deg, #fde68a 0%, #f59e0b 55%, #d97706 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  /* ============ 全站深色应用皮肤（与牌桌配套） ============ */
+
+  /* 深色玻璃卡片：非牌桌页面的统一容器 */
+  .app-card {
+    border-radius: 1rem;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    background-color: rgba(255, 255, 255, 0.04);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.08),
+      0 4px 20px rgba(0, 0, 0, 0.25);
+  }
+
+  /* 页头图标圆块（与牌桌顶栏徽章同源） */
+  .app-icon-badge {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.75rem;
+    height: 2.75rem;
+    flex: none;
+    border-radius: 0.875rem;
+    font-size: 1.375rem;
+    line-height: 1;
+    background: linear-gradient(135deg, rgba(27, 122, 74, 0.9) 0%, rgba(11, 61, 38, 0.95) 100%);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.18),
+      0 4px 14px rgba(0, 0, 0, 0.35);
+  }
+
+  /* 页头标题（白色粗体） */
+  .app-page-title {
+    font-size: 1.125rem;
+    font-weight: 600;
+    color: #f1f5f9;
+    letter-spacing: 0.01em;
+  }
+
+  /* 页头副标题（柔和灰） */
+  .app-page-desc {
+    margin-top: 0.125rem;
+    font-size: 0.75rem;
+    color: rgba(148, 163, 184, 0.85);
+  }
+
+  /* 分区标题 */
+  .app-section-title {
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: rgba(148, 163, 184, 0.9);
+  }
+
+  /* 深色环境下的原生下拉选项（color-scheme: dark 的补充） */
+  select option {
+    background-color: #0f172a;
+    color: #e2e8f0;
+  }
+}
+
+@layer utilities {
+  /* 禁止文本选中，用于牌面多选交互 */
+  .select-none-important {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+}
