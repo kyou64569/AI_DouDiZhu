@@ -45,12 +45,15 @@ export interface AppSettings {
   humanTimeoutMs: number;
   /** 观战模式下的 AI 决策硬超时（毫秒） */
   spectateTimeoutMs: number;
+  /** 是否已看过新手引导（建议清单 #14；false=下次进入应用时自动弹出） */
+  hasSeenTutorial: boolean;
 }
 
 /** 出厂默认值 */
 export const DEFAULT_SETTINGS: AppSettings = {
   humanTimeoutMs: DEFAULT_HUMAN_TIMEOUT_MS,
   spectateTimeoutMs: DEFAULT_SPECTATE_TIMEOUT_MS,
+  hasSeenTutorial: false,
 };
 
 /**
@@ -85,6 +88,8 @@ function loadSettings(): AppSettings {
   return {
     humanTimeoutMs: clampTimeoutMs(raw.humanTimeoutMs, DEFAULT_HUMAN_TIMEOUT_MS),
     spectateTimeoutMs: clampTimeoutMs(raw.spectateTimeoutMs, DEFAULT_SPECTATE_TIMEOUT_MS),
+    // 严格 === true：被篡改成任意其它值都视作「未看过」，重新弹一次引导无害
+    hasSeenTutorial: raw.hasSeenTutorial === true,
   };
 }
 
@@ -136,8 +141,11 @@ export interface SettingsStoreState extends AppSettings {
   /** 设置观战模式超时（自动夹取到合法区间） */
   setSpectateTimeoutMs: (value: number) => void;
 
-  /** 恢复出厂默认 */
+  /** 恢复出厂默认（保留「已看过引导」标记——那是体验状态而非超时偏好） */
   resetTimeouts: () => void;
+
+  /** 标记新手引导已看过（建议清单 #14），即时持久化 */
+  markTutorialSeen: () => void;
 
   /** 按房间模式取生效超时；thinking 为 true 时返回思考态更长的超时 */
   timeoutForMode: (mode: RoomMode | null, thinking?: boolean) => number;
@@ -157,23 +165,37 @@ export const useSettingsStore = create<SettingsStoreState>((set, get) => ({
   setHumanTimeoutMs: (value: number): void => {
     const humanTimeoutMs: number = clampTimeoutMs(value, DEFAULT_HUMAN_TIMEOUT_MS);
     set({ humanTimeoutMs });
-    persistSettings({ humanTimeoutMs, spectateTimeoutMs: get().spectateTimeoutMs });
+    persistSettings({ humanTimeoutMs, spectateTimeoutMs: get().spectateTimeoutMs, hasSeenTutorial: get().hasSeenTutorial });
   },
 
   setSpectateTimeoutMs: (value: number): void => {
     const spectateTimeoutMs: number = clampTimeoutMs(value, DEFAULT_SPECTATE_TIMEOUT_MS);
     set({ spectateTimeoutMs });
-    persistSettings({ humanTimeoutMs: get().humanTimeoutMs, spectateTimeoutMs });
+    persistSettings({ humanTimeoutMs: get().humanTimeoutMs, spectateTimeoutMs, hasSeenTutorial: get().hasSeenTutorial });
   },
 
   resetTimeouts: (): void => {
-    set({ ...DEFAULT_SETTINGS });
-    persistSettings({ ...DEFAULT_SETTINGS });
+    const next: AppSettings = { ...DEFAULT_SETTINGS, hasSeenTutorial: get().hasSeenTutorial };
+    set(next);
+    persistSettings(next);
+  },
+
+  markTutorialSeen: (): void => {
+    set({ hasSeenTutorial: true });
+    persistSettings({ humanTimeoutMs: get().humanTimeoutMs, spectateTimeoutMs: get().spectateTimeoutMs, hasSeenTutorial: true });
   },
 
   timeoutForMode: (mode: RoomMode | null, thinking = false): number => {
     const state: SettingsStoreState = get();
-    return pickTimeoutMs({ humanTimeoutMs: state.humanTimeoutMs, spectateTimeoutMs: state.spectateTimeoutMs }, mode, thinking);
+    return pickTimeoutMs(
+      {
+        humanTimeoutMs: state.humanTimeoutMs,
+        spectateTimeoutMs: state.spectateTimeoutMs,
+        hasSeenTutorial: state.hasSeenTutorial,
+      },
+      mode,
+      thinking,
+    );
   },
 }));
 

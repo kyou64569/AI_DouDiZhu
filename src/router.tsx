@@ -22,6 +22,8 @@ const AIPlayerPage = lazy((): Promise<{ default: React.ComponentType }> => impor
 const RoomPage = lazy((): Promise<{ default: React.ComponentType }> => import('./pages/RoomPage'));
 const GameTablePage = lazy((): Promise<{ default: React.ComponentType }> => import('./pages/GameTablePage'));
 const HistoryPage = lazy((): Promise<{ default: React.ComponentType }> => import('./pages/HistoryPage'));
+const PuzzlePage = lazy((): Promise<{ default: React.ComponentType }> => import('./pages/PuzzlePage'));
+const ReplayPage = lazy((): Promise<{ default: React.ComponentType }> => import('./pages/ReplayPage'));
 
 // 路由常量已下沉到 `./routes`（纯数据、零组件依赖），以断开
 // router → page → router 的循环依赖。此处 re-export 仅为兼容既有引用，
@@ -65,8 +67,10 @@ const routes: RouteObject[] = [
       { path: 'config', element: withSuspense(<ModelConfigPage />) },
       { path: 'players', element: withSuspense(<AIPlayerPage />) },
       { path: 'room', element: withSuspense(<RoomPage />) },
+      { path: 'puzzle', element: withSuspense(<PuzzlePage />) },
       { path: 'table', element: withSuspense(<GameTablePage />) },
       { path: 'history', element: withSuspense(<HistoryPage />) },
+      { path: 'replay/:id', element: withSuspense(<ReplayPage />) },
       { path: '*', element: <NotFoundPage /> },
     ],
   },

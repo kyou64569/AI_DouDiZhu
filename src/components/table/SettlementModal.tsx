@@ -15,6 +15,8 @@ import type { Player } from '@/types/game';
 import { Modal } from '@/components/common/Modal';
 import { Button } from '@/components/common/Button';
 import { formatMultiplier, formatScore } from '@/utils/format';
+import { useTournamentStore, computeChampion } from '@/store/tournamentStore';
+import { useGameStore } from '@/store/gameStore';
 import { cn } from '@/utils/cn';
 import { ROUTES } from '@/routes';
 
@@ -25,6 +27,8 @@ export interface SettlementModalProps {
   settlement: SettlementResult | null;
   /** 三家玩家（用于展示座位名与地主标识） */
   players: [Player, Player, Player];
+  /** 残局模式：隐藏「查看战绩」入口并把重开按钮改为「重新挑战」 */
+  puzzleMode?: boolean;
   /** 再来一局 */
   onRestart: () => void;
   /** 关闭弹窗（查看终局牌桌，不重开） */
@@ -40,11 +44,17 @@ export const SettlementModal = memo(function SettlementModal({
   open,
   settlement,
   players,
+  puzzleMode = false,
   onRestart,
   onDismiss,
   onExit,
   className,
 }: SettlementModalProps): JSX.Element | null {
+  // 连胜赛进度（未开启时各字段为默认值，主体区块不渲染）
+  const tournament = useTournamentStore();
+  // AI 复盘（#8）：结算后异步生成；null 表示本局不可用（无绑定模型 / 残局）
+  const aiReview = useGameStore((state) => state.aiReview);
+
   if (!settlement) {
     return (
       <Modal open={open} onClose={onDismiss} title="对局结算" variant="dark">
@@ -56,6 +66,17 @@ export const SettlementModal = memo(function SettlementModal({
   const landlordWin: boolean = settlement.landlordWin;
   const title: string = landlordWin ? '地主获胜' : '农民获胜';
   const titleEmoji: string = landlordWin ? '👑' : '🌾';
+
+  // 连胜赛：冠军（打满后）与重开按钮文案（残局模式不参与赛制，隐藏该区块）
+  const showTournament: boolean = tournament.active && !puzzleMode;
+  const champion = showTournament && tournament.finished ? computeChampion(tournament.seatScores) : null;
+  const restartLabel: string = puzzleMode
+    ? '重新挑战'
+    : tournament.active && tournament.finished
+      ? '重新开始比赛'
+      : tournament.active
+        ? '下一局 →'
+        : '再来一局';
 
   return (
     <Modal open={open} onClose={onDismiss} title="对局结算" size="md" variant="dark" className={className}>
@@ -113,6 +134,43 @@ export const SettlementModal = memo(function SettlementModal({
           </div>
         </div>
 
+        {/* 连胜赛进度 / 总冠军（建议清单 #4；残局模式不显示） */}
+        {showTournament ? (
+          <div className="flex flex-col gap-2">
+            {champion !== null ? (
+              <div className="flex flex-col items-center gap-1 rounded-xl border border-gold-400/40 bg-gold-500/10 px-3 py-3 text-center">
+                <p className="text-lg font-black text-gold-gradient">
+                  🏆 总冠军：{players[champion.seat].name}
+                </p>
+                <p className="text-xs text-slate-300">
+                  {champion.tie ? '（并列最高分，按座位序取首）' : ''}
+                  累计 <span className="font-bold text-gold-300 tabular-nums">{formatScore(champion.score)}</span> 分 ·{' '}
+                  {tournament.completedRounds}/{tournament.targetRounds} 局
+                </p>
+              </div>
+            ) : (
+              <p className="text-center text-xs font-medium text-gold-300">
+                🏆 连胜赛 · 第 {tournament.completedRounds} / {tournament.targetRounds} 局累计积分
+              </p>
+            )}
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              {players.map((p: Player, seat: number) => (
+                <span
+                  key={seat}
+                  className={cn(
+                    'rounded-lg px-2 py-1 text-xs tabular-nums ring-1',
+                    champion !== null && seat === champion.seat
+                      ? 'bg-gold-500/15 text-gold-200 ring-gold-400/40'
+                      : 'bg-white/5 text-slate-300 ring-white/10',
+                  )}
+                >
+                  {p.name} <span className="font-bold">{formatScore(tournament.seatScores[seat])}</span>
+                </span>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
         {/* 三家得分 */}
         <div>
           <p className="mb-2 text-xs font-medium tracking-wide text-slate-500">各席得分</p>
@@ -152,17 +210,68 @@ export const SettlementModal = memo(function SettlementModal({
           </div>
         </div>
 
+        {/* AI 复盘（建议清单 #8） */}
+        {aiReview !== null ? (
+          <div className="flex flex-col gap-2 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-3">
+            {aiReview.status === 'pending' ? (
+              <p className="flex items-center gap-2 text-xs text-slate-400">
+                <span className="h-3 w-3 animate-spin rounded-full border-2 border-gold-400/30 border-t-gold-400" aria-hidden="true" />
+                AI 复盘生成中…（约需 10~30 秒，完成后自动展示并写入战绩）
+              </p>
+            ) : aiReview.status === 'failed' ? (
+              <p className="text-xs text-slate-500">🧠 AI 复盘生成失败：{aiReview.error ?? '未知原因'}</p>
+            ) : (
+              <>
+                <p className="text-xs font-medium text-gold-300">
+                  🧠 AI 复盘
+                  {aiReview.model ? <span className="ml-1.5 text-[11px] text-slate-500">复盘模型：{aiReview.model}</span> : null}
+                </p>
+                {aiReview.summary ? (
+                  <p className="text-xs leading-relaxed text-slate-200">{aiReview.summary}</p>
+                ) : null}
+                {aiReview.hands !== undefined && aiReview.hands.length > 0 ? (
+                  <ol className="flex flex-col gap-2">
+                    {aiReview.hands.map((hand, i: number) => (
+                      <li key={`${hand.playIndex}-${hand.seat}`} className="rounded-lg bg-black/20 px-2.5 py-2">
+                        <p className="flex flex-wrap items-center gap-1.5 text-xs text-slate-300">
+                          <span className="font-semibold text-slate-200">
+                            第 {hand.playIndex + 1} 手 · {players[hand.seat]?.name ?? `座位${hand.seat + 1}`}
+                          </span>
+                          <span className="tabular-nums">{hand.play}</span>
+                          {hand.degraded ? (
+                            <span className="rounded bg-red-500/15 px-1.5 py-px text-[10px] text-red-300 ring-1 ring-red-400/30">
+                              ⚠ 降级
+                            </span>
+                          ) : null}
+                        </p>
+                        {hand.reason ? (
+                          <p className="mt-0.5 text-[11px] text-slate-500">当时理由：{hand.reason}</p>
+                        ) : null}
+                        <p className="mt-1 text-xs leading-relaxed text-slate-200">
+                          {aiReview.comments?.[i] ?? '（该手无点评）'}
+                        </p>
+                      </li>
+                    ))}
+                  </ol>
+                ) : null}
+              </>
+            )}
+          </div>
+        ) : null}
+
         <div className="flex flex-wrap items-center justify-end gap-2.5">
-          <Link to={ROUTES.HISTORY}>
-            <Button variant="ghost" className="text-slate-300 hover:bg-white/10 hover:text-white">
-              查看战绩
-            </Button>
-          </Link>
+          {!puzzleMode ? (
+            <Link to={ROUTES.HISTORY}>
+              <Button variant="ghost" className="text-slate-300 hover:bg-white/10 hover:text-white">
+                查看战绩
+              </Button>
+            </Link>
+          ) : null}
           <Button variant="ghost" onClick={onExit} className="text-slate-300 hover:bg-white/10 hover:text-white">
             退出对局
           </Button>
           <Button variant="gold" size="lg" onClick={onRestart}>
-            再来一局
+            {restartLabel}
           </Button>
         </div>
       </div>

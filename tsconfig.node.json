@@ -25,5 +25,5 @@
 
     "types": ["node"]
   },
-  "include": ["vite.config.ts", "tailwind.config.ts", "server"]
+  "include": ["vite.config.ts", "tailwind.config.ts", "playwright.config.ts", "server"]
 }

@@ -67,3 +67,6 @@ docs/PRD.md
 .DS_Store
 Thumbs.db
 *.swp
+# Playwright E2E
+test-results/
+playwright-report/

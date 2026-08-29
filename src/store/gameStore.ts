@@ -52,16 +52,23 @@ import {
   type AIDecision,
   type AIBidDecision,
   type AIModelBinding,
+  type AIDecisionTrace,
 } from '@/types/ai';
 import { useRoomStore } from './roomStore';
 import { usePlayerStore } from './playerStore';
 import { useConfigStore } from './configStore';
 import { useHistoryStore } from './historyStore';
+import { usePuzzleStore } from './puzzleStore';
+import { useTournamentStore } from './tournamentStore';
+import { toErrorMessage } from '@/api/client';
+import { parsePuzzleHands } from '@/puzzle/levels';
+import type { PuzzleLevel } from '@/types/puzzle';
 import { resolveTimeoutMs } from './settingsStore';
 import { isThinkingEnabled } from '@/ai/thinking';
 import { logSink, useLogStore } from './logStore';
 import { playSfx, startBackground, stopBackground, speak } from '@/audio/soundService';
 import { describePlay, describePass } from '@/audio/cardSpeech';
+import { formatCards } from '@/engine/sort';
 import {
   generateBanter,
   templateBanter,
@@ -72,7 +79,12 @@ import {
   type BanterContext,
 } from '@/audio/banter';
 import { toast } from '@/components/common/Toast';
-import type { GameRecord, SeatSummary } from '@/types/history';
+import type { GameRecord, SeatSummary, AIReview, AIReviewHand } from '@/types/history';
+import {
+  aggregateSeatStats,
+  generateAIReview,
+  selectReviewHands,
+} from '@/ai/review';
 
 /**
  * 解析某座位 AI 玩家的模型绑定。
@@ -449,6 +461,37 @@ let gameEpoch: number = 0;
 /** H1：在途 AI 调用的 AbortController，新对局时 abort 旧请求以释放连接 */
 let aiAbortController: AbortController | null = null;
 
+/**
+ * 在途复盘请求的并发上限与控制器集合（LRU）。
+ *
+ * 复盘不随重开局作废（完成时按记录存在性回填历史，见 startAIReview），
+ * 因此不在这里做「开局即中止」；上限只用于防失控——快速连打多局时
+ * 最旧的在途复盘被静默淘汰（其完成回调识别出自己已被移出集合，直接丢弃，
+ * 不写 failed 状态）。
+ */
+const REVIEW_MAX_INFLIGHT: number = 3;
+const reviewControllers: AbortController[] = [];
+
+/** 本局 AI 决策轨迹（复盘选手 + 决策质量统计的数据源，建议清单 #8/#9），开局清空 */
+let decisionTraces: AIDecisionTrace[] = [];
+
+/** 决策轨迹数量上限，防止长游戏导致内存过度增长 */
+const MAX_DECISION_TRACES = 500;
+
+/** 采集一条决策轨迹（aiAct 专用；采集失败不影响对局） */
+function collectTrace(trace: AIDecisionTrace): void {
+  decisionTraces.push(trace);
+  // 防止长游戏导致内存过度增长：超过上限时移除最旧的轨迹
+  if (decisionTraces.length > MAX_DECISION_TRACES) {
+    decisionTraces.shift();
+  }
+}
+
+/** 清空决策轨迹（开局 / 重置时调用） */
+function resetTraces(): void {
+  decisionTraces = [];
+}
+
 /** 安全提取异常文本（驱动器可能 throw 任意值） */
 function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -543,9 +586,15 @@ export interface GameStoreState extends GameState {
   autoPassEnabled: boolean;
   /** 流局重发计数 */
   redealCount: number;
+  /** 残局模式：当前对局来自的关卡 id；普通对局为 null（建议清单 #3） */
+  puzzleLevelId: string | null;
+  /** AI 复盘（结算后异步生成；null 表示不可用 / 未开启，建议清单 #8） */
+  aiReview: AIReview | null;
 
   /** 从房间快照开始一局（房间为空时引导用户回房间页） */
   startGame: (room?: Room) => boolean;
+  /** 从残局关卡开始对局（跳过叫分、固定手牌；AI 对手为内置本地策略，不消耗模型调用） */
+  startPuzzle: (level: PuzzleLevel) => boolean;
   /** 人类点击叫分 */
   humanBid: (score: BidScore) => void;
   /** 统一叫分入口（人类或 AI 调用） */
@@ -635,7 +684,14 @@ export const useGameStore = create<GameStoreState>((set, get) => {
     settlement: SettlementResult,
     playHistory: PlayRecord[],
   ): void {
-    const landlordWin: boolean = winnerSeat === (st.landlordSeat as SeatIndex);
+    const landlordSeat = st.landlordSeat;
+    if (landlordSeat === null) {
+      // 异常情况：结算时地主座位为空，跳过副作用避免崩溃
+      // eslint-disable-next-line no-console
+      console.warn('[gameStore] finalizeSettlement: landlordSeat is null, skipping side effects');
+      return;
+    }
+    const landlordWin: boolean = winnerSeat === landlordSeat;
     // 对局结束：停背景音，并按「人类是否获胜」播放胜负提示
     stopBackground();
     const humanSeat: SeatIndex | null = st.humanSeat;
@@ -651,37 +707,189 @@ export const useGameStore = create<GameStoreState>((set, get) => {
       }
     }
     // 落库历史（玩家可回看牌局 / 累计模型积分）。失败不影响对局结束。
+    // 残局模式改为更新残局进度，不写入战绩（避免污染历史页与模型排行榜）。
+    if (st.puzzleLevelId !== null) {
+      const movesUsed: number = playHistory.filter(
+        (record: PlayRecord): boolean => record.seat === st.humanSeat && !record.isPass,
+      ).length;
+      usePuzzleStore.getState().recordResult(st.puzzleLevelId, winnerSeat === st.humanSeat, movesUsed);
+    } else {
+      let reviewedRecordId: string | null = null;
+      try {
+        // 决策质量统计（#9）：按座位聚合本局 AI 决策轨迹
+        const statsBySeat = aggregateSeatStats(decisionTraces);
+        const seats: SeatSummary[] = st.players.map((p, seat): SeatSummary => {
+          const stats = statsBySeat[seat as SeatIndex];
+          return {
+            seat: seat as SeatIndex,
+            name: p.name,
+            kind: p.kind,
+            avatar: p.avatar,
+            aiPlayerId: p.aiPlayerId,
+            isLandlord: p.isLandlord,
+            model: p.kind === 'AI' ? (resolveBinding(p.aiPlayerId)?.model ?? null) : null,
+            score: settlement.seatScores[seat],
+            ...(p.kind === 'AI' && stats !== undefined && stats.decisions > 0 ? { stats } : {}),
+          };
+        });
+        const record: GameRecord = {
+          id: `g-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          finishedAt: Date.now(),
+          mode: (st.roomMode ?? 'HUMAN_VS_AI') as GameRecord['mode'],
+          landlordWin,
+          winnerSeat,
+          baseScore: settlement.baseScore,
+          multiplier: settlement.multiplier,
+          unitScore: settlement.unitScore,
+          isSpring: settlement.isSpring,
+          isAntiSpring: settlement.isAntiSpring,
+          multiplierDetail: settlement.multiplierDetail,
+          seats,
+          bidHistory: st.bidHistory,
+          playHistory,
+        };
+        useHistoryStore.getState().addRecord(record);
+        reviewedRecordId = record.id;
+      } catch (err: unknown) {
+        // eslint-disable-next-line no-console
+        console.warn('[history] 保存对局记录失败（不影响对局结束）：', err);
+      }
+      // AI 复盘（#8）：fire-and-forget。放在落库 try 之外——它的同步异常不应被
+      // 误标为「保存对局记录失败」；复盘完成时按记录存在性回填（见 startAIReview），
+      // 不随后续开局作废。
+      if (reviewedRecordId !== null) {
+        void startAIReview(st, playHistory, reviewedRecordId, winnerSeat, landlordSeat);
+      }
+      // 连胜赛累加（未开启 / 已打满时为 no-op）；失败不影响结算
+      try {
+        useTournamentStore.getState().recordRound({ winnerSeat, seatScores: settlement.seatScores });
+      } catch {
+        /* 赛制累加失败不影响结算 */
+      }
+    }
+  }
+
+  /**
+   * AI 复盘（建议清单 #8）：从本局挑出 2-3 手关键决策，让绑定的模型做一次
+   * 「这手该不该这么出」的分析，结果写入 gameStore.aiReview（结算弹窗展示）
+   * 并回填对应历史记录（战绩页可查）。
+   *
+   * fire-and-forget：任何失败都降级为 status=failed，绝不影响结算流程。
+   * 不随重开局作废：复盘的产出物是历史记录的回填，与新对局无数据冲突，
+   * 完成时只要目标记录仍存在就 patch（patchAIReview 自带存在性检查）；
+   * gameStore.aiReview 的实时更新则校验 gameId，避免旧局复盘污染新局弹窗。
+   * 并发受 REVIEW_MAX_INFLIGHT 约束（LRU 淘汰最旧，被淘汰者静默丢弃不写 failed）。
+   */
+  async function startAIReview(
+    st: GameStoreState,
+    playHistory: PlayRecord[],
+    recordId: string,
+    winnerSeat: SeatIndex,
+    landlordSeat: SeatIndex,
+  ): Promise<void> {
+    // 选一个有模型绑定的 AI 座位执行复盘
+    // 优先选择地主座位（通常决策更关键），其次选择有有效绑定的第一个 AI 座位
+    let binding: AIModelBinding | null = null;
+    const aiPlayers = st.players.filter((p) => p.kind === 'AI' && p.aiPlayerId);
+
+    // 先尝试地主座位（如果有 AI 地主）
+    if (landlordSeat !== null) {
+      const landlord = aiPlayers.find((p) => p.seat === landlordSeat);
+      if (landlord && landlord.aiPlayerId) {
+        binding = resolveBinding(landlord.aiPlayerId);
+      }
+    }
+
+    // 地主无绑定或无 AI 地主，则选择第一个有有效绑定的 AI 座位
+    if (binding === null) {
+      for (const p of aiPlayers) {
+        if (!p.aiPlayerId) continue;
+        binding = resolveBinding(p.aiPlayerId);
+        if (binding !== null) break;
+      }
+    }
+
+    const seatNames: Record<SeatIndex, string> = {
+      0: st.players[0].name,
+      1: st.players[1].name,
+      2: st.players[2].name,
+    };
+    const hands = binding !== null ? selectReviewHands(playHistory, decisionTraces) : [];
+    // 不可用（无绑定 / 无 AI 出牌轨迹）：不产生 aiReview，结算弹窗不展示区块
+    if (binding === null || hands.length === 0) {
+      return;
+    }
+
+    // 仅用于判断「结算弹窗是否还停留在本局」；复盘本身不随开局中止
+    const gameId: number = st.gameId;
+
+    // 设置 pending 状态前先校验 gameId，防止旧局复盘污染新局
+    if (useGameStore.getState().gameId !== gameId) {
+      return;
+    }
+    useGameStore.setState({ aiReview: { status: 'pending', generatedAt: Date.now() } });
+
+    // 登记本局复盘的 AbortController；超过并发上限时淘汰并中止最旧的一条
+    const controller: AbortController = new AbortController();
+    reviewControllers.push(controller);
+    while (reviewControllers.length > REVIEW_MAX_INFLIGHT) {
+      const evicted: AbortController | undefined = reviewControllers.shift();
+      try { evicted?.abort(); } catch { /* ignore */ }
+    }
+
     try {
-      const seats: SeatSummary[] = st.players.map((p, seat): SeatSummary => ({
-        seat: seat as SeatIndex,
-        name: p.name,
-        kind: p.kind,
-        avatar: p.avatar,
-        aiPlayerId: p.aiPlayerId,
-        isLandlord: p.isLandlord,
-        model: p.kind === 'AI' ? (resolveBinding(p.aiPlayerId)?.model ?? null) : null,
-        score: settlement.seatScores[seat],
-      }));
-      const record: GameRecord = {
-        id: `g-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        finishedAt: Date.now(),
-        mode: (st.roomMode ?? 'HUMAN_VS_AI') as GameRecord['mode'],
-        landlordWin,
-        winnerSeat,
-        baseScore: settlement.baseScore,
-        multiplier: settlement.multiplier,
-        unitScore: settlement.unitScore,
-        isSpring: settlement.isSpring,
-        isAntiSpring: settlement.isAntiSpring,
-        multiplierDetail: settlement.multiplierDetail,
-        seats,
-        bidHistory: st.bidHistory,
-        playHistory,
+      const outcome = await generateAIReview({
+        binding,
+        hands,
+        seatNames,
+        landlordSeat,
+        landlordWin: winnerSeat === landlordSeat,
+        signal: controller.signal,
+      });
+      const review: AIReview = {
+        status: 'done',
+        model: binding.model,
+        hands: hands.map(
+          (h): AIReviewHand => ({
+            seat: h.seat,
+            playIndex: h.playIndex,
+            play: formatCards(h.cards),
+            reason: h.reason,
+            degraded: h.degraded,
+            warnings: h.warnings,
+          }),
+        ),
+        summary: outcome.summary,
+        comments: outcome.comments,
+        generatedAt: Date.now(),
       };
-      useHistoryStore.getState().addRecord(record);
+      // 历史记录始终回填（记录已被清空/删除时 patchAIReview 自行 no-op）；
+      // 实时弹窗状态仅在仍是本局时更新
+      useHistoryStore.getState().patchAIReview(recordId, review);
+      if (useGameStore.getState().gameId === gameId) {
+        useGameStore.setState({ aiReview: review });
+      }
     } catch (err: unknown) {
-      // eslint-disable-next-line no-console
-      console.warn('[history] 保存对局记录失败（不影响对局结束）：', err);
+      // 被并发上限淘汰（已不在集合中）：静默丢弃，不写 failed
+      if (!reviewControllers.includes(controller)) {
+        return;
+      }
+      const review: AIReview = {
+        status: 'failed',
+        model: binding.model,
+        error: toErrorMessage(err),
+        generatedAt: Date.now(),
+      };
+      useHistoryStore.getState().patchAIReview(recordId, review);
+      if (useGameStore.getState().gameId === gameId) {
+        useGameStore.setState({ aiReview: review });
+      }
+    } finally {
+      // 注销本局复盘控制器
+      const idx: number = reviewControllers.indexOf(controller);
+      if (idx >= 0) {
+        reviewControllers.splice(idx, 1);
+      }
     }
   }
 
@@ -762,6 +970,8 @@ export const useGameStore = create<GameStoreState>((set, get) => {
     hintCycleIndex: -1,
     autoPassEnabled: false,
     redealCount: 0,
+    puzzleLevelId: null,
+    aiReview: null,
 
     startGame: (roomArg?: Room): boolean => {
       const room: Room | null = roomArg ?? useRoomStore.getState().room;
@@ -771,10 +981,12 @@ export const useGameStore = create<GameStoreState>((set, get) => {
       }
 
       // H1：新对局即递增代际并中止在途 AI 请求，防止旧局决策污染新局
+      //（复盘请求不受影响：见 startAIReview，完成时按记录存在性回填）
       if (aiAbortController) {
         try { aiAbortController.abort(); } catch { /* ignore */ }
         aiAbortController = null;
       }
+      // 复盘请求不在此中止：见 startAIReview，完成时按记录存在性回填历史
       aiActing = false;
       gameEpoch += 1;
       urgedTurnKey = null;
@@ -783,6 +995,7 @@ export const useGameStore = create<GameStoreState>((set, get) => {
       stopBackground();
       // 新开局：清空上一局残留的 AI 思考日志（修复：观战模式进入牌桌后残留上次内容）
       useLogStore.getState().clear();
+      resetTraces();
 
       const players: [Player, Player, Player] = buildPlayers(room);
       const deal = createShuffledDeal(Math.random);
@@ -816,11 +1029,79 @@ export const useGameStore = create<GameStoreState>((set, get) => {
         selectedCardIds: [],
         hintCycleIndex: -1,
         redealCount: 0,
+        puzzleLevelId: null,
+        aiReview: null,
       });
       // 开局即后台预热 AI 台词池（过牌/嘲讽/催促），出牌时即时取用，不卡节奏
       warmBanterForSeats();
       // 开局语音播报：消除叫分阶段沉默，提示玩家进入叫地主流程
       speak('开始叫地主！');
+      return true;
+    },
+
+    /**
+     * 从残局关卡开始对局（建议清单 #3）。
+     *
+     * 跳过发牌与叫分：三家手牌用关卡预设值，直接进入出牌阶段。
+     * AI 陪练座位不绑定 aiPlayerId → resolveBinding 返回 null → 走内置本地策略，
+     * 整个残局零模型调用。挑战失败/胜利均不落库战绩，只更新残局进度。
+     */
+    startPuzzle: (level: PuzzleLevel): boolean => {
+      const hands = parsePuzzleHands(level);
+      if (hands === null) {
+        toast.error('残局关卡数据非法，无法开始');
+        return false;
+      }
+
+      // 中止在途请求 + 推进代际（同 startGame 的隔离语义）
+      if (aiAbortController) {
+        try { aiAbortController.abort(); } catch { /* ignore */ }
+        aiAbortController = null;
+      }
+      // 复盘请求不在此中止：见 startAIReview，完成时按记录存在性回填历史
+      aiActing = false;
+      gameEpoch += 1;
+      urgedTurnKey = null;
+      stopBackground();
+      useLogStore.getState().clear();
+      resetTraces();
+
+      // 陪练命名刻意不取用户配置的 AI 玩家名：陪练走内置本地策略、不绑定模型，
+      // 若沿用用户配置名会让用户误以为「自己的模型在出牌」
+      const makePlayer = (seat: SeatIndex): Player => ({
+        seat,
+        name:
+          seat === level.playSeat
+            ? '你'
+            : seat === 1
+              ? 'AI 陪练·甲'
+              : 'AI 陪练·乙',
+        kind: seat === level.playSeat ? 'HUMAN' : 'AI',
+        hand: hands[seat],
+        isLandlord: seat === level.landlordSeat,
+      });
+
+      set({
+        ...IDLE_STATE,
+        gameId: gameEpoch,
+        phase: GamePhase.PLAYING,
+        players: [makePlayer(0), makePlayer(1), makePlayer(2)],
+        bottomCards: [],
+        bottomRevealed: false,
+        landlordSeat: level.landlordSeat,
+        currentSeat: level.firstSeat,
+        isFreeTurn: true,
+        lastPlay: null,
+        baseScore: 1,
+        multiplier: 1,
+        humanSeat: level.playSeat,
+        roomMode: 'HUMAN_VS_AI',
+        selectedCardIds: [],
+        hintCycleIndex: -1,
+        redealCount: 0,
+        puzzleLevelId: level.id,
+        aiReview: null,
+      });
       return true;
     },
 
@@ -1053,6 +1334,21 @@ export const useGameStore = create<GameStoreState>((set, get) => {
             );
           }
 
+          // 决策轨迹采集（#8/#9）：叫分阶段
+          if (decision !== null) {
+            collectTrace({
+              seat,
+              phase: 'bid',
+              turn: -1,
+              isPass: false,
+              cardCount: 0,
+              source: decision.source,
+              warnings: decision.warnings,
+              reason: decision.reason,
+              latencyMs: decision.latencyMs,
+            });
+          }
+
           // 对局代际校验（H1）：await 期间局面已推进或对局已重开，丢弃过期决策，
           // 防止旧局模型决策写入新局（叫分历史污染 / 错座位动作）
           if (cursorOf(get()) !== before) return;
@@ -1112,6 +1408,21 @@ export const useGameStore = create<GameStoreState>((set, get) => {
               `出牌驱动器抛出异常（${errText(err)}），已转入本地兜底`,
               DecisionSource.FALLBACK_ERROR,
             );
+          }
+
+          // 决策轨迹采集（#8/#9）：出牌阶段
+          if (decision !== null) {
+            collectTrace({
+              seat,
+              phase: 'play',
+              turn: st.turn,
+              isPass: decision.isPass,
+              cardCount: decision.cards.length,
+              source: decision.source,
+              warnings: decision.warnings,
+              reason: decision.reason,
+              latencyMs: decision.latencyMs,
+            });
           }
 
           // 对局代际校验（H1）：await 期间局面已推进或对局已重开，丢弃过期决策
@@ -1284,13 +1595,16 @@ export const useGameStore = create<GameStoreState>((set, get) => {
     resetGame: (): void => {
       stopBackground();
       // H1：中止在途 AI 请求并释放重入锁，防止退出/重开对局时在途 aiAct 锁死新局
+      //（复盘请求不受影响：见 startAIReview，完成时按记录存在性回填）
       if (aiAbortController) {
         try { aiAbortController.abort(); } catch { /* ignore */ }
         aiAbortController = null;
       }
+      // 复盘请求不在此中止：见 startAIReview，完成时按记录存在性回填历史
       aiActing = false;
       gameEpoch += 1;
       urgedTurnKey = null;
+      resetTraces();
       set({
         ...IDLE_STATE,
         gameId: gameEpoch,
@@ -1299,6 +1613,8 @@ export const useGameStore = create<GameStoreState>((set, get) => {
         selectedCardIds: [],
         hintCycleIndex: -1,
         redealCount: 0,
+        puzzleLevelId: null,
+        aiReview: null,
       });
     },
   };

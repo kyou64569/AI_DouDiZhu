@@ -20,8 +20,12 @@ import { Link, useNavigate } from 'react-router-dom';
 
 import { GamePhase, type BidScore, type SeatIndex } from '@/types/game';
 import type { Room } from '@/types/config';
+import type { PuzzleLevel } from '@/types/puzzle';
 import { useRoomStore } from '@/store/roomStore';
 import { useGameStore, AI_STEP_MS, SPECTATE_STEP_MS } from '@/store/gameStore';
+import { usePuzzleStore } from '@/store/puzzleStore';
+import { useTournamentStore } from '@/store/tournamentStore';
+import { getPuzzleLevel } from '@/puzzle/levels';
 import { useCountdown } from '@/hooks/useCountdown';
 import { useIsDesktop } from '@/hooks/useMediaQuery';
 import { HandCards } from '@/components/card/HandCards';
@@ -101,6 +105,10 @@ function TurnRing({ remaining }: { remaining: number }): JSX.Element {
 export function GameTablePage(): JSX.Element {
   const room: Room | null = useRoomStore((state) => state.room);
   const isDesktop: boolean = useIsDesktop();
+
+  // 残局模式：激活的关卡（room 为空但残局激活时，牌桌照常渲染）
+  const activeLevelId: string | null = usePuzzleStore((state) => state.activeLevelId);
+  const activePuzzleLevel: PuzzleLevel | null = activeLevelId !== null ? (getPuzzleLevel(activeLevelId) ?? null) : null;
 
   const game = useGameStore();
   const navigate = useNavigate();
@@ -239,10 +247,23 @@ export function GameTablePage(): JSX.Element {
 
   const restart = useCallback(() => {
     setSettlementDismissed(false);
+    // 残局模式：重开同一关卡（不经过房间/发牌）
+    if (activePuzzleLevel !== null) {
+      useGameStore.getState().startPuzzle(activePuzzleLevel);
+      return;
+    }
     // 同房间重发：直接 startGame（沿用现有 room），不再 clearRoom，
     // 否则 room 变 null 会让牌桌退回「尚未创建房间」，给人「一局就退出」的错觉。
-    useGameStore.getState().startGame();
-  }, []);
+    const started: boolean = useGameStore.getState().startGame();
+    // 连胜赛打满后再来一局：确认新局真正开始后才重置赛制计分，
+    // 避免开局失败（如房间已被清空）时把已打满的赛制进度白白清掉
+    if (started) {
+      const tournament = useTournamentStore.getState();
+      if (tournament.active && tournament.finished) {
+        tournament.start(tournament.targetRounds);
+      }
+    }
+  }, [activePuzzleLevel]);
 
   // 退出对局：清空牌桌（resetGame 重置为 IDLE、清空终局状态）+ 清掉已激活房间
   // （clearRoom 置 room:null，但保留模式与座位配置以便快速再来），再回到房间页。
@@ -252,9 +273,15 @@ export function GameTablePage(): JSX.Element {
   // 满足 `room && phase===IDLE`，触发自动开局 effect，给人「退出后又自动开了一局」的错觉。
   const onExit = useCallback(() => {
     useGameStore.getState().resetGame();
+    // 残局模式：退出回到残局选择页，并清掉激活关卡（防止 /table 残留进入残局态）
+    if (activePuzzleLevel !== null) {
+      usePuzzleStore.getState().clearActive();
+      navigate(ROUTES.PUZZLE);
+      return;
+    }
     useRoomStore.getState().clearRoom();
     navigate(ROUTES.ROOM);
-  }, [navigate]);
+  }, [navigate, activePuzzleLevel]);
 
   // —— 观战视角（仅 AI_SPECTATE 生效）——
   // 此前视角写死为 0 号座位，用户只能看第一位 AI 的手牌；改为可切换 + 可全明。
@@ -352,8 +379,8 @@ export function GameTablePage(): JSX.Element {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [phase, isHumanTurn, isFreeTurn, currentSeat, humanSeat, highestBid, selectedCardIds]);
 
-  // 房间为空：引导回房间页，避免白屏（深色沉浸版）
-  if (!room) {
+  // 房间为空且无激活残局：引导回房间/残局页，避免白屏（深色沉浸版）
+  if (!room && activePuzzleLevel === null) {
     return (
       <div className="table-felt flex min-h-screen w-full flex-col items-center justify-center gap-4 px-6 text-center">
         <div className="flex h-16 w-16 items-center justify-center rounded-2xl border border-gold-400/30 bg-black/25 text-3xl shadow-glowGold">
@@ -393,6 +420,18 @@ export function GameTablePage(): JSX.Element {
         底牌
       </span>
       <CardGroup cards={bottomCards} size="sm" animate />
+    </div>
+  ) : null;
+
+  /** 残局模式横幅：关卡名 + 目标 + 参考手数（建议清单 #3） */
+  const puzzleBanner: JSX.Element | null = activePuzzleLevel !== null ? (
+    <div className="glass-panel flex flex-wrap items-center justify-center gap-x-3 gap-y-1 rounded-2xl px-4 py-2 text-center">
+      <span className="flex items-center gap-1.5 text-xs font-bold tracking-wide text-gold-300">
+        <span className="text-sm leading-none" aria-hidden="true">🧩</span>
+        残局 · {activePuzzleLevel.name}
+      </span>
+      <span className="text-xs text-white/75">{activePuzzleLevel.goal}</span>
+      <span className="text-xs text-white/45">参考 {activePuzzleLevel.parMoves} 手</span>
     </div>
   ) : null;
 
@@ -477,6 +516,8 @@ export function GameTablePage(): JSX.Element {
           onToggleAutoPass={() => useGameStore.getState().setAutoPassEnabled(!autoPassEnabled)}
         />
 
+      {puzzleBanner}
+
       <div className="grid flex-1 grid-cols-[1fr_2.2fr_1fr] items-start gap-3 md:gap-4">
         {/* 左侧对家 */}
         <div className="flex min-w-0 justify-start">
@@ -541,6 +582,8 @@ export function GameTablePage(): JSX.Element {
           autoPassEnabled={autoPassEnabled}
           onToggleAutoPass={() => useGameStore.getState().setAutoPassEnabled(!autoPassEnabled)}
         />
+
+      {puzzleBanner}
 
       {phase === GamePhase.BIDDING && currentSeat === humanSeat ? (
         <BiddingPanel highestBid={highestBid} legalBids={legalBids} onBid={(s) => useGameStore.getState().humanBid(s)} />
@@ -608,6 +651,7 @@ export function GameTablePage(): JSX.Element {
           open={showSettlement}
           settlement={settlement}
           players={players}
+          puzzleMode={activePuzzleLevel !== null}
           onRestart={restart}
           onDismiss={() => setSettlementDismissed(true)}
           onExit={onExit}

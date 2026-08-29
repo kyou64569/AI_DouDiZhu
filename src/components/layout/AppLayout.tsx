@@ -13,6 +13,8 @@
 import { useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { NAV_ITEMS, ROUTES, type NavItem } from '@/routes';
+import { useSettingsStore } from '@/store/settingsStore';
+import { OnboardingModal } from '@/components/common/OnboardingModal';
 import { cn } from '@/utils/cn';
 
 /** 汉堡 / 关闭图标 */
@@ -49,6 +51,19 @@ export function AppLayout(): JSX.Element {
   /** 牌桌路由：切换为沉浸式（无顶栏/底栏/页面宽度限制） */
   const isImmersive: boolean = location.pathname === ROUTES.TABLE;
 
+  // 新手引导（建议清单 #14）：首次进入应用自动弹出；关闭时标记已看过
+  const [onboardingOpen, setOnboardingOpen] = useState<boolean>(false);
+  useEffect(() => {
+    if (!useSettingsStore.getState().hasSeenTutorial) {
+      setOnboardingOpen(true);
+    }
+  }, []);
+  const closeOnboarding = (): void => {
+    setOnboardingOpen(false);
+    useSettingsStore.getState().markTutorialSeen();
+  };
+  const reopenOnboarding = (): void => setOnboardingOpen(true);
+
   // 路由切换后自动收起移动端菜单
   useEffect(() => {
     setMenuOpen(false);
@@ -74,6 +89,13 @@ export function AppLayout(): JSX.Element {
                   {item.label}
                 </NavLink>
               ))}
+              <button
+                type="button"
+                onClick={reopenOnboarding}
+                className="rounded-xl px-3 py-2 text-sm font-medium text-slate-400 transition-all duration-150 hover:bg-white/8 hover:text-slate-100 active:scale-[0.97]"
+              >
+                🎓 新手引导
+              </button>
             </nav>
 
             {/* 移动端汉堡按钮（<768px） */}
@@ -97,6 +119,16 @@ export function AppLayout(): JSX.Element {
                     {item.label}
                   </NavLink>
                 ))}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    reopenOnboarding();
+                  }}
+                  className="rounded-xl px-3 py-2 text-left text-sm font-medium text-slate-400 transition-colors hover:bg-white/8 hover:text-slate-100"
+                >
+                  🎓 新手引导
+                </button>
               </div>
             </nav>
           ) : null}
@@ -114,6 +146,9 @@ export function AppLayout(): JSX.Element {
           </p>
         </footer>
       ) : null}
+
+      {/* 新手引导（建议清单 #14）：首次自动弹出，顶栏可重开 */}
+      <OnboardingModal open={onboardingOpen} onClose={closeOnboarding} />
     </div>
   );
 }

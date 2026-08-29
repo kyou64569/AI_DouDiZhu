@@ -12,7 +12,7 @@
 
 import { create } from 'zustand';
 import { ensureDataVersion, isNonEmptyString, isPlainObject, readArray, STORAGE_KEYS, writeJson } from './persist';
-import type { GameRecord, LeaderboardEntry } from '@/types/history';
+import type { AIReview, GameRecord, HeadToHeadEntry, LeaderboardEntry } from '@/types/history';
 import type { SeatIndex } from '@/types/game';
 
 /** 最多保留多少局（超出丢弃最旧） */
@@ -67,15 +67,39 @@ function loadRecords(): GameRecord[] {
  *  - 按「模型 id」聚合（人类统一为一组）；
  *  - totalScore = 该身份所有对局得分求和（净胜分，越高越强）；
  *  - wins = 该身份得分 > 0 的局数；winRate = wins / games；
+ *  - 决策质量（建议清单 #9）：llmSuccessRate = LLM 决策 / 总决策，
+ *    avgLatencyMs 按各局决策次数加权平均，fallbackCount 累计降级次数；
+ *    人类座位与无决策数据的旧记录为 null / 0；
  *  - 排序：先按 totalScore 降序，再按 wins 降序。
  */
 export function computeLeaderboard(records: GameRecord[]): LeaderboardEntry[] {
-  const map = new Map<string, { label: string; totalScore: number; games: number; wins: number }>();
+  const map = new Map<
+    string,
+    {
+      label: string;
+      totalScore: number;
+      games: number;
+      wins: number;
+      decisions: number;
+      llmDecisions: number;
+      fallbackCount: number;
+      latencyTotalMs: number;
+    }
+  >();
 
   const bump = (key: string, label: string) => {
     let entry = map.get(key);
     if (!entry) {
-      entry = { label, totalScore: 0, games: 0, wins: 0 };
+      entry = {
+        label,
+        totalScore: 0,
+        games: 0,
+        wins: 0,
+        decisions: 0,
+        llmDecisions: 0,
+        fallbackCount: 0,
+        latencyTotalMs: 0,
+      };
       map.set(key, entry);
     }
     return entry;
@@ -90,6 +114,12 @@ export function computeLeaderboard(records: GameRecord[]): LeaderboardEntry[] {
       if (seat.score > 0) {
         entry.wins += 1;
       }
+      if (seat.stats !== undefined) {
+        entry.decisions += seat.stats.decisions;
+        entry.llmDecisions += seat.stats.llmDecisions;
+        entry.fallbackCount += seat.stats.fallbackDecisions;
+        entry.latencyTotalMs += seat.stats.avgDecisionMs * seat.stats.decisions;
+      }
     }
   }
 
@@ -102,6 +132,9 @@ export function computeLeaderboard(records: GameRecord[]): LeaderboardEntry[] {
       games: entry.games,
       wins: entry.wins,
       winRate: entry.games > 0 ? entry.wins / entry.games : 0,
+      llmSuccessRate: entry.decisions > 0 ? entry.llmDecisions / entry.decisions : null,
+      avgLatencyMs: entry.decisions > 0 ? entry.latencyTotalMs / entry.decisions : null,
+      fallbackCount: entry.fallbackCount,
     });
   }
 
@@ -112,6 +145,53 @@ export function computeLeaderboard(records: GameRecord[]): LeaderboardEntry[] {
   return entries;
 }
 
+/**
+ * 聚合两个模型同场对战的 H2H 战绩（建议清单 #9）。
+ *
+ * 只统计 model !== null 的 AI 座位；每条记录内先按模型聚合净胜分
+ * （同一模型占多座时求和，如观战模式三座绑同一配置），再对每个模型组合
+ * 比较一次——避免「同模型多座 × 另一模型」把同一局在同一个对战对里重复计数。
+ * 按本局聚合净胜分比高低（同分记平）。方向固定为模型 id 字典序，保证聚合稳定。
+ */
+export function computeHeadToHead(records: GameRecord[]): HeadToHeadEntry[] {
+  const map = new Map<string, HeadToHeadEntry>();
+
+  for (const rec of records) {
+    const scoreByModel = new Map<string, number>();
+    for (const seat of rec.seats) {
+      if (seat.model === null) {
+        continue;
+      }
+      scoreByModel.set(seat.model, (scoreByModel.get(seat.model) ?? 0) + seat.score);
+    }
+    const models: string[] = Array.from(scoreByModel.keys()).sort((x, y) => x.localeCompare(y));
+    for (let i = 0; i < models.length; i += 1) {
+      for (let j = i + 1; j < models.length; j += 1) {
+        const modelA: string = models[i];
+        const modelB: string = models[j];
+        const key: string = `${modelA}::${modelB}`;
+        let entry = map.get(key);
+        if (entry === undefined) {
+          entry = { modelA, modelB, aWins: 0, bWins: 0, draws: 0, games: 0 };
+          map.set(key, entry);
+        }
+        entry.games += 1;
+        const scoreA: number = scoreByModel.get(modelA) as number;
+        const scoreB: number = scoreByModel.get(modelB) as number;
+        if (scoreA > scoreB) {
+          entry.aWins += 1;
+        } else if (scoreB > scoreA) {
+          entry.bWins += 1;
+        } else {
+          entry.draws += 1;
+        }
+      }
+    }
+  }
+
+  return Array.from(map.values()).sort((x, y) => y.games - x.games || y.aWins + y.bWins - (x.aWins + x.bWins));
+}
+
 /** 人类身份的常量键（供 UI 判断） */
 export const HUMAN_LEADERBOARD_KEY = HUMAN_KEY;
 
@@ -120,6 +200,8 @@ interface HistoryStoreState {
   records: GameRecord[];
   /** 追加一局 */
   addRecord: (record: GameRecord) => void;
+  /** 回填某局记录的 AI 复盘（结算后异步生成，建议清单 #8） */
+  patchAIReview: (recordId: string, review: AIReview) => void;
   /** 清空全部 */
   clear: () => void;
 }
@@ -132,6 +214,19 @@ export const useHistoryStore = create<HistoryStoreState>((set, get) => ({
       return;
     }
     const next: GameRecord[] = [record, ...get().records].slice(0, MAX_RECORDS);
+    set({ records: next });
+    ensureDataVersion();
+    writeJson(STORAGE_KEYS.HISTORY, next);
+  },
+
+  patchAIReview: (recordId: string, review: AIReview): void => {
+    const found = get().records.some((r: GameRecord): boolean => r.id === recordId);
+    if (!found) {
+      return;
+    }
+    const next: GameRecord[] = get().records.map((r: GameRecord): GameRecord =>
+      r.id === recordId ? { ...r, aiReview: review } : r,
+    );
     set({ records: next });
     ensureDataVersion();
     writeJson(STORAGE_KEYS.HISTORY, next);

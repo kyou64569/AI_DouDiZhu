@@ -28,7 +28,7 @@ import {
 
 /** 构造设置对象 */
 function settings(humanTimeoutMs: number, spectateTimeoutMs: number): AppSettings {
-  return { humanTimeoutMs, spectateTimeoutMs };
+  return { humanTimeoutMs, spectateTimeoutMs, hasSeenTutorial: false };
 }
 
 describe('clampTimeoutMs', () => {
@@ -144,7 +144,7 @@ describe('useSettingsStore', () => {
 });
 
 describe('pickTimeoutMs · 思考态延长', () => {
-  const base: AppSettings = { humanTimeoutMs: 8000, spectateTimeoutMs: 20000 };
+  const base: AppSettings = { humanTimeoutMs: 8000, spectateTimeoutMs: 20000, hasSeenTutorial: false };
 
   it('人机模式开思考 → 8s 抬升到 30s', () => {
     expect(pickTimeoutMs(base, 'HUMAN_VS_AI', true)).toBe(THINKING_HUMAN_TIMEOUT_MS);
@@ -160,7 +160,7 @@ describe('pickTimeoutMs · 思考态延长', () => {
   });
 
   it('思考态只增不减：用户设置比思考下限还长时以用户为准', () => {
-    const generous: AppSettings = { humanTimeoutMs: 50000, spectateTimeoutMs: 20000 };
+    const generous: AppSettings = { humanTimeoutMs: 50000, spectateTimeoutMs: 20000, hasSeenTutorial: false };
     expect(pickTimeoutMs(generous, 'HUMAN_VS_AI', true)).toBe(50000);
   });
 

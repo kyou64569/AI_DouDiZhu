@@ -61,6 +61,28 @@ export interface ThinkingLog {
   timestamp: number;
 }
 
+/** AI 决策轨迹（aiAct 逐次采集，用于复盘选手与决策质量统计，建议清单 #8/#9） */
+export interface AIDecisionTrace {
+  /** 决策座位 */
+  seat: SeatIndex;
+  /** 阶段 */
+  phase: 'bid' | 'play';
+  /** 出牌阶段的回合序号（对应 playHistory.turn）；叫分阶段为 -1 */
+  turn: number;
+  /** 是否过牌 */
+  isPass: boolean;
+  /** 拟出牌张数（过牌为 0） */
+  cardCount: number;
+  /** 决策来源（LLM / FALLBACK_*） */
+  source: DecisionSource;
+  /** 降级 / 告警信息 */
+  warnings: string[];
+  /** 决策理由 */
+  reason: string;
+  /** 决策耗时（毫秒） */
+  latencyMs: number;
+}
+
 /* =============================================================================
  * AI 驱动器契约 —— T04（gameStore）与 T05（aiOrchestrator）的唯一交汇点。
  * 本段由主理人锁定，T04 与 T05 均只读引用，任何一方不得修改字段名或签名。

@@ -23,8 +23,16 @@ export const ROUTES = {
   PLAYERS: '/players',
   ROOM: '/room',
   TABLE: '/table',
+  PUZZLE: '/puzzle',
   HISTORY: '/history',
+  /** 回放页路由前缀（实际路径 /replay/:id，用 replayPath 生成） */
+  REPLAY_BASE: '/replay',
 } as const;
+
+/** 生成某条对局记录的回放路径 */
+export function replayPath(recordId: string): string {
+  return `${ROUTES.REPLAY_BASE}/${encodeURIComponent(recordId)}`;
+}
 
 /** 导航项，供 AppLayout 渲染顶部导航 */
 export interface NavItem {
@@ -37,6 +45,7 @@ export const NAV_ITEMS: NavItem[] = [
   { path: ROUTES.CONFIG, label: '模型配置' },
   { path: ROUTES.PLAYERS, label: 'AI 玩家' },
   { path: ROUTES.ROOM, label: '创建房间' },
+  { path: ROUTES.PUZZLE, label: '残局挑战' },
   { path: ROUTES.TABLE, label: '牌桌' },
   { path: ROUTES.HISTORY, label: '战绩' },
 ];

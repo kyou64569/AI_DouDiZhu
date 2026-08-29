@@ -7,7 +7,7 @@
  * - 未满员时「开始游戏」禁用；满员点击后写入 roomStore 并跳转 /table
  */
 
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import Button from '@/components/common/Button';
 import Select, { type SelectOption } from '@/components/common/Select';
@@ -18,6 +18,7 @@ import type { AIPlayer, ModelConfig, Room, RoomMode } from '@/types/config';
 import { usePlayerStore } from '@/store/playerStore';
 import { useConfigStore } from '@/store/configStore';
 import { useSoundStore } from '@/store/soundStore';
+import { useTournamentStore } from '@/store/tournamentStore';
 import {
   ROOM_MODE_DESC,
   ROOM_MODE_LABEL,
@@ -31,6 +32,14 @@ import {
 
 /** 可选模式列表 */
 const MODES: readonly RoomMode[] = ['HUMAN_VS_AI', 'AI_SPECTATE'] as const;
+
+/** 赛制选项（0 = 单局；N = 连胜赛 N 局累计积分，建议清单 #4） */
+const TOURNAMENT_OPTIONS: readonly { value: number; label: string; desc: string }[] = [
+  { value: 0, label: '单局', desc: '打一局结算一次' },
+  { value: 3, label: '3 局赛', desc: '三局累计积分定总冠军' },
+  { value: 5, label: '5 局赛', desc: '五局累计积分定总冠军' },
+  { value: 7, label: '7 局赛', desc: '七局累计积分定总冠军' },
+] as const;
 
 /**
  * 房间创建页。
@@ -48,6 +57,9 @@ export function RoomPage(): JSX.Element {
   const clearSeats = useRoomStore((state) => state.clearSeats);
   const pruneSeats = useRoomStore((state) => state.pruneSeats);
   const createRoom = useRoomStore((state) => state.createRoom);
+
+  /** 赛制局数（0 = 单局） */
+  const [tournamentRounds, setTournamentRounds] = useState<number>(0);
 
   /** 玩家 id → 玩家对象 */
   const playerMap: Map<string, AIPlayer> = useMemo((): Map<string, AIPlayer> => {
@@ -130,12 +142,21 @@ export function RoomPage(): JSX.Element {
   const handleStart = (): void => {
     // 用户点击即一次明确手势，借此解锁浏览器音频（自动播放策略要求）
     useSoundStore.getState().unlock();
+    // 赛制：每次开始都以本页选择为准，避免残留旧赛制（连胜赛/单局互切）
+    const tournament = useTournamentStore.getState();
+    if (tournamentRounds > 0) {
+      tournament.start(tournamentRounds);
+    } else {
+      tournament.reset();
+    }
     const room: Room | null = createRoom();
     if (room === null) {
       toast.error(blockReason.length > 0 ? blockReason : '座位尚未满员，无法开始');
       return;
     }
-    toast.success('房间已创建，正在进入牌桌');
+    toast.success(
+      tournamentRounds > 0 ? `已开启 ${tournamentRounds} 局连胜赛，正在进入牌桌` : '房间已创建，正在进入牌桌',
+    );
     navigate(ROUTES.TABLE);
   };
 
@@ -187,6 +208,38 @@ export function RoomPage(): JSX.Element {
             );
           })}
         </div>
+      </section>
+
+      {/* 赛制选择（连胜赛） */}
+      <section className="app-card p-5">
+        <h2 className="app-section-title mb-3">赛制</h2>
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          {TOURNAMENT_OPTIONS.map((option) => {
+            const active: boolean = tournamentRounds === option.value;
+            return (
+              <button
+                key={option.value}
+                type="button"
+                onClick={() => setTournamentRounds(option.value)}
+                aria-pressed={active}
+                className={cn(
+                  'flex flex-col items-start gap-1 rounded-xl border p-3 text-left transition-all duration-150 active:scale-[0.99]',
+                  active
+                    ? 'border-gold-400/70 bg-brand-500/15 shadow-glowGold ring-1 ring-gold-400/50'
+                    : 'border-white/10 bg-white/[0.03] hover:-translate-y-0.5 hover:border-white/25 hover:bg-white/[0.06]',
+                )}
+              >
+                <span className="text-sm font-semibold text-slate-100">{option.label}</span>
+                <span className="text-xs text-slate-400">{option.desc}</span>
+              </button>
+            );
+          })}
+        </div>
+        <p className="mt-2.5 text-xs text-slate-500">
+          {tournamentRounds > 0
+            ? `连胜赛进行中，每局结算后点「下一局 →」继续，${tournamentRounds} 局后按累计积分决出总冠军。`
+            : '选择 N 局赛制后，每局结束自动累加三家积分，打满后弹出总冠军。'}
+        </p>
       </section>
 
       {/* AI 玩家不足的引导 */}

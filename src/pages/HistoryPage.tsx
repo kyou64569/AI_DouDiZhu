@@ -10,9 +10,9 @@
 
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { useHistoryStore, computeLeaderboard } from '@/store/historyStore';
+import { useHistoryStore, computeLeaderboard, computeHeadToHead } from '@/store/historyStore';
 import { usePlayerStore } from '@/store/playerStore';
-import { ROUTES } from '@/routes';
+import { ROUTES, replayPath } from '@/routes';
 import { formatMultiplier, formatScore } from '@/utils/format';
 import { formatCards } from '@/engine/sort';
 import { getCardTypeName } from '@/engine/cardType';
@@ -91,6 +91,7 @@ export function HistoryPage(): JSX.Element {
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const leaderboard = useMemo(() => computeLeaderboard(records), [records]);
+  const headToHead = useMemo(() => computeHeadToHead(records), [records]);
 
   const nameOf = (rec: GameRecord) => (seat: SeatIndex): string => {
     return rec.seats.find((s) => s.seat === seat)?.name ?? `座位${seat + 1}`;
@@ -133,53 +134,124 @@ export function HistoryPage(): JSX.Element {
 
       {/* —— 模型排行榜 —— */}
       <section>
-        <h2 className="app-section-title mb-2">模型排行榜（累计净胜分）</h2>
+        <h2 className="app-section-title mb-2">模型排行榜（累计净胜分 + 决策质量）</h2>
         {leaderboard.length === 0 ? (
           <p className="rounded-xl border border-dashed border-white/15 bg-white/[0.03] px-4 py-6 text-center text-sm text-slate-500">
             还没有对局数据。打完一局后，这里会按模型累计积分。
           </p>
         ) : (
-          <div className="app-card overflow-hidden">
-            <div className="grid grid-cols-[2.5rem_1fr_5rem_3.5rem_3.5rem_3.5rem] gap-2 border-b border-white/10 bg-white/5 px-3 py-2 text-xs font-medium text-slate-400">
-              <span>#</span>
-              <span>模型 / 身份</span>
-              <span className="text-right">净胜分</span>
-              <span className="text-right">对局</span>
-              <span className="text-right">胜局</span>
-              <span className="text-right">胜率</span>
-            </div>
-            {leaderboard.map((entry, idx) => (
-              <div
-                key={entry.key}
-                className={cn(
-                  'grid grid-cols-[2.5rem_1fr_5rem_3.5rem_3.5rem_3.5rem] gap-2 px-3 py-2 text-sm transition-colors hover:bg-white/5',
-                  idx < leaderboard.length - 1 && 'border-b border-white/8',
-                )}
-              >
-                <span className={cn('font-semibold tabular-nums', idx === 0 ? 'text-gold-300' : 'text-slate-500')}>
-                  {idx + 1}
-                </span>
-                <span className="truncate font-medium text-slate-200" title={entry.label}>
-                  {entry.label}
-                </span>
-                <span
+          <div className="app-card overflow-x-auto">
+            <div className="min-w-[680px]">
+              <div className="grid grid-cols-[2.5rem_1fr_5rem_3.5rem_3.5rem_3.5rem_5rem_5rem_3.5rem] gap-2 border-b border-white/10 bg-white/5 px-3 py-2 text-xs font-medium text-slate-400">
+                <span>#</span>
+                <span>模型 / 身份</span>
+                <span className="text-right">净胜分</span>
+                <span className="text-right">对局</span>
+                <span className="text-right">胜局</span>
+                <span className="text-right">胜率</span>
+                <span className="text-right" title="LLM 正常决策占比（不含降级兜底）">决策成功</span>
+                <span className="text-right" title="AI 决策平均耗时">平均耗时</span>
+                <span className="text-right" title="模型输出非法、被本地策略兜底的累计次数">降级</span>
+              </div>
+              {leaderboard.map((entry, idx) => (
+                <div
+                  key={entry.key}
                   className={cn(
-                    'text-right font-semibold tabular-nums',
-                    entry.totalScore > 0 ? 'text-emerald-400' : entry.totalScore < 0 ? 'text-red-400' : 'text-slate-500',
+                    'grid grid-cols-[2.5rem_1fr_5rem_3.5rem_3.5rem_3.5rem_5rem_5rem_3.5rem] gap-2 px-3 py-2 text-sm transition-colors hover:bg-white/5',
+                    idx < leaderboard.length - 1 && 'border-b border-white/8',
                   )}
                 >
-                  {formatScore(entry.totalScore)}
-                </span>
-                <span className="text-right tabular-nums text-slate-400">{entry.games}</span>
-                <span className="text-right tabular-nums text-slate-400">{entry.wins}</span>
-                <span className="text-right tabular-nums text-slate-400">
-                  {(entry.winRate * 100).toFixed(0)}%
-                </span>
-              </div>
-            ))}
+                  <span className={cn('font-semibold tabular-nums', idx === 0 ? 'text-gold-300' : 'text-slate-500')}>
+                    {idx + 1}
+                  </span>
+                  <span className="truncate font-medium text-slate-200" title={entry.label}>
+                    {entry.label}
+                  </span>
+                  <span
+                    className={cn(
+                      'text-right font-semibold tabular-nums',
+                      entry.totalScore > 0 ? 'text-emerald-400' : entry.totalScore < 0 ? 'text-red-400' : 'text-slate-500',
+                    )}
+                  >
+                    {formatScore(entry.totalScore)}
+                  </span>
+                  <span className="text-right tabular-nums text-slate-400">{entry.games}</span>
+                  <span className="text-right tabular-nums text-slate-400">{entry.wins}</span>
+                  <span className="text-right tabular-nums text-slate-400">
+                    {(entry.winRate * 100).toFixed(0)}%
+                  </span>
+                  <span className="text-right tabular-nums text-slate-400" title="LLM 决策成功率">
+                    {entry.llmSuccessRate === null ? '—' : `${(entry.llmSuccessRate * 100).toFixed(0)}%`}
+                  </span>
+                  <span className="text-right tabular-nums text-slate-400" title="决策平均耗时">
+                    {entry.avgLatencyMs === null ? '—' : `${Math.round(entry.avgLatencyMs)}ms`}
+                  </span>
+                  <span
+                    className={cn(
+                      'text-right tabular-nums',
+                      entry.fallbackCount > 0 ? 'text-amber-400' : 'text-slate-500',
+                    )}
+                    title="降级兜底次数"
+                  >
+                    {entry.fallbackCount}
+                  </span>
+                </div>
+              ))}
+            </div>
           </div>
         )}
       </section>
+
+      {/* —— 模型同场对战（H2H，建议清单 #9） —— */}
+      <section>
+        <h2 className="app-section-title mb-2">模型同场对战（H2H）</h2>
+        {headToHead.length === 0 ? (
+          <p className="rounded-xl border border-dashed border-white/15 bg-white/[0.03] px-4 py-4 text-center text-xs text-slate-500">
+            同场对局中出现两个及以上不同模型后，这里会按净胜分展示两两之间的胜负平；
+            单模型或人机对局不产生对战统计。
+          </p>
+        ) : (
+        <div className="app-card flex flex-col">
+            {headToHead.map((h2h, idx) => (
+              <div
+                key={`${h2h.modelA}::${h2h.modelB}`}
+                className={cn(
+                  'flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-2 text-sm',
+                  idx < headToHead.length - 1 && 'border-b border-white/8',
+                )}
+              >
+                <span className="font-medium text-slate-200">{h2h.modelA}</span>
+                <span
+                  className={cn(
+                    'rounded px-1.5 py-0.5 text-xs font-semibold tabular-nums',
+                    h2h.aWins >= h2h.bWins
+                      ? 'bg-emerald-500/15 text-emerald-300'
+                      : 'bg-white/10 text-slate-300',
+                  )}
+                  title={`${h2h.modelA} 净胜分占优的局数`}
+                >
+                  {h2h.aWins} 胜
+                </span>
+                <span className="text-xs text-slate-500">· {h2h.draws} 平 ·</span>
+                <span
+                  className={cn(
+                    'rounded px-1.5 py-0.5 text-xs font-semibold tabular-nums',
+                    h2h.bWins > h2h.aWins
+                      ? 'bg-emerald-500/15 text-emerald-300'
+                      : 'bg-white/10 text-slate-300',
+                  )}
+                  title={`${h2h.modelB} 净胜分占优的局数`}
+                >
+                  {h2h.bWins} 胜
+                </span>
+                <span className="font-medium text-slate-200">{h2h.modelB}</span>
+                <span className="ml-auto text-xs text-slate-500">同场 {h2h.games} 局</span>
+              </div>
+            ))}
+          </div>
+          )}
+          <p className="mt-1.5 text-xs text-slate-500">口径：两个模型在同一条记录中的净胜分直接比大小（同分记平）。</p>
+        </section>
 
       {/* —— 对局列表 —— */}
       <section>
@@ -240,6 +312,12 @@ export function HistoryPage(): JSX.Element {
                             </span>
                           </span>
                         ))}
+                        <Link
+                          to={replayPath(rec.id)}
+                          className="ml-auto flex items-center gap-1 rounded-lg border border-gold-400/40 bg-gold-500/10 px-2.5 py-1 text-xs font-medium text-gold-300 transition-colors hover:bg-gold-500/20"
+                        >
+                          🎬 动画回放
+                        </Link>
                       </div>
 
                       <div className="mb-2 flex flex-wrap gap-2">

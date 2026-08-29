@@ -24,6 +24,8 @@ export const STORAGE_KEYS = {
   SOUND: 'dz.sound',
   /** 对局历史记录（GameRecord[]） */
   HISTORY: 'dz.history',
+  /** 残局挑战进度（Record<levelId, PuzzleProgress>） */
+  PUZZLE_PROGRESS: 'dz.puzzle.progress',
 } as const;
 
 /** 键名字面量类型 */
@@ -302,6 +304,7 @@ const EXPORT_KEYS: readonly StorageKey[] = [
   STORAGE_KEYS.SETTINGS,
   STORAGE_KEYS.SOUND,
   STORAGE_KEYS.HISTORY,
+  STORAGE_KEYS.PUZZLE_PROGRESS,
   STORAGE_KEYS.VERSION,
   STORAGE_KEYS.KEY_WARNING_ACK,
 ];
