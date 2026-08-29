@@ -86,12 +86,3 @@ export function buildThinkingBody(
       return {};
   }
 }
-
-/** 便捷封装：一次调用完成「识别 + 翻译」 */
-export function resolveThinkingBody(
-  baseUrl: string,
-  model: string,
-  resolved: ResolvedThinking,
-): Record<string, unknown> {
-  return buildThinkingBody(detectProvider(baseUrl, model), resolved.thinking, resolved.reasoningEffort);
-}

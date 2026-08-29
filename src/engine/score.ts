@@ -210,17 +210,15 @@ export function calculateSettlement(input: SettlementInput): SettlementResult {
  * 判断对局是否结束：任一玩家手牌为空。
  *
  * @param hands 三家手牌数量（number[]，座位 i 剩余张数）
- * @returns 出完牌的座位号；无人出完返回 null（L2：原实现返回 hands.length 与 SeatIndex 混淆，且参数误用 Card[][]）
+ * @returns 出完牌的座位号；无人出完返回 null（P1 防御：NaN/负数/非有限数不视为获胜，线性扫描确保 NaN 不误判）
  */
 export function findWinnerSeat(hands: number[]): number | null {
-  let seat = 0;
-  while (seat < hands.length && seat < PLAYER_COUNT && hands[seat] > 0) {
-    seat += 1;
-  }
-  // Defensive: ensure we check all expected seats even if hands.length is corrupted
-  const maxSeats = Math.min(hands.length, PLAYER_COUNT);
-  if (seat < maxSeats && hands[seat] === 0) {
-    return seat;
+  const limit: number = Math.min(hands.length, PLAYER_COUNT);
+  for (let seat = 0; seat < limit; seat += 1) {
+    const v: number = hands[seat];
+    if (Number.isFinite(v) && v === 0) {
+      return seat;
+    }
   }
   return null;
 }

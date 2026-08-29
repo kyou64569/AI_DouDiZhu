@@ -41,6 +41,7 @@ import {
 import {
   acknowledgeKeyWarning,
   exportAllAppData,
+  exportAllAppDataMasked,
   importAllAppData,
   isKeyWarningAcknowledged,
 } from '@/store/persist';
@@ -210,6 +211,9 @@ function TimeoutField({ label, hint, valueMs, defaultMs, onCommit }: TimeoutFiel
 
   const commit = (): void => {
     const parsed: number = Number.parseInt(draft, 10);
+    if (!Number.isFinite(parsed)) {
+      toast.warning('输入无效，已恢复默认值');
+    }
     const ms: number = Number.isFinite(parsed) ? parsed * 1000 : defaultMs;
     onCommit(ms);
     setDraft(msToSecText(Math.min(Math.max(ms, MIN_TIMEOUT_MS), MAX_TIMEOUT_MS)));
@@ -299,8 +303,8 @@ export function ModelConfigPage(): JSX.Element {
   const configs: ModelConfig[] = useConfigStore((state) => state.configs);
   const testResults = useConfigStore((state) => state.testResults);
   const fetchedModels = useConfigStore((state) => state.fetchedModels);
-  const testingKey: string | null = useConfigStore((state) => state.testingKey);
-  const fetchingKey: string | null = useConfigStore((state) => state.fetchingKey);
+  const testingKeys: string[] = useConfigStore((state) => state.testingKeys);
+  const fetchingKeys: string[] = useConfigStore((state) => state.fetchingKeys);
   const addConfig = useConfigStore((state) => state.addConfig);
   const updateConfig = useConfigStore((state) => state.updateConfig);
   const deleteConfig = useConfigStore((state) => state.deleteConfig);
@@ -320,19 +324,29 @@ export function ModelConfigPage(): JSX.Element {
 
   /** 导出全部配置为 JSON 文件（含 API Key，提示妥善保管） */
   const handleExport = (): void => {
-    const json: string = exportAllAppData();
+    downloadConfigJson(exportAllAppData(), 'doudizhu-config');
+    toast.success('配置已导出。文件含 API Key，请勿上传到 git 或公开位置');
+  };
+
+  /** 导出脱敏版配置（M-3）：API Key 前 6 后 3 脱敏，适合分享/调试 */
+  const handleExportMasked = (): void => {
+    downloadConfigJson(exportAllAppDataMasked(), 'doudizhu-config-masked');
+    toast.success('已导出脱敏配置（API Key 已打码），可安全分享');
+  };
+
+  /** 生成并下载 JSON 文件 */
+  const downloadConfigJson = (json: string, prefix: string): void => {
     const blob = new Blob([json], { type: 'application/json' });
     const url: string = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
     const d: Date = new Date();
     const pad = (n: number): string => String(n).padStart(2, '0');
-    a.download = `doudizhu-config-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}.json`;
+    a.download = `${prefix}-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}.json`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-    toast.success('配置已导出。文件含 API Key，请勿上传到 git 或公开位置');
   };
 
   /** 导入配置文件：校验后写回 localStorage，刷新页面生效 */
@@ -429,25 +443,35 @@ export function ModelConfigPage(): JSX.Element {
     });
   };
 
-  /** 表单内点击「拉取模型」 */
+  /** 表单内点击「拉取模型」 P2：显式捕获未处理 rejection */
   const handleFetchModels = async (): Promise<void> => {
-    const models: ModelItem[] = await fetchModels({ baseUrl: draft.baseUrl, apiKey: draft.apiKey }, formKey);
-    if (models.length === 0) {
-      return;
-    }
-    // 首次拉取且尚未勾选任何模型时，默认全选，减少用户操作
-    setDraft((prev: ModelConfigInput): ModelConfigInput => {
-      if (prev.availableModels.length > 0) {
-        return prev;
+    try {
+      const models: ModelItem[] = await fetchModels({ baseUrl: draft.baseUrl, apiKey: draft.apiKey }, formKey);
+      if (models.length === 0) {
+        return;
       }
-      const ids: string[] = models.map((m: ModelItem): string => m.id);
-      return { ...prev, availableModels: ids, selectedModel: prev.selectedModel || (ids[0] ?? '') };
-    });
+      // 首次拉取且尚未勾选任何模型时，默认全选，减少用户操作
+      setDraft((prev: ModelConfigInput): ModelConfigInput => {
+        if (prev.availableModels.length > 0) {
+          return prev;
+        }
+        const ids: string[] = models.map((m: ModelItem): string => m.id);
+        return { ...prev, availableModels: ids, selectedModel: prev.selectedModel || (ids[0] ?? '') };
+      });
+    } catch (err: unknown) {
+      const msg: string = err instanceof Error ? err.message : String(err);
+      toast.error(msg);
+    }
   };
 
   /** 表单内点击「连通性测试」（不写回任何已保存配置） */
   const handleTestDraft = async (): Promise<void> => {
-    await testConnection({ baseUrl: draft.baseUrl, apiKey: draft.apiKey }, formKey);
+    try {
+      await testConnection({ baseUrl: draft.baseUrl, apiKey: draft.apiKey }, formKey);
+    } catch (err: unknown) {
+      const msg: string = err instanceof Error ? err.message : String(err);
+      toast.error(msg);
+    }
   };
 
   /** 列表行点击「测试」（同样只读，不修改配置） */
@@ -480,8 +504,8 @@ export function ModelConfigPage(): JSX.Element {
     }
   };
 
-  const isFetching: boolean = fetchingKey === formKey;
-  const isTestingForm: boolean = testingKey === formKey;
+  const isFetching: boolean = fetchingKeys.includes(formKey);
+  const isTestingForm: boolean = testingKeys.includes(formKey);
 
   return (
     <div className="flex flex-col gap-4">
@@ -501,6 +525,9 @@ export function ModelConfigPage(): JSX.Element {
         <div className="flex flex-wrap items-center gap-2">
           <Button variant="ghost" onClick={handleExport}>
             导出配置
+          </Button>
+          <Button variant="ghost" onClick={handleExportMasked} title="API Key 脱敏后导出，可安全分享">
+            导出(脱敏)
           </Button>
           <Button variant="ghost" onClick={() => fileInputRef.current?.click()}>
             导入配置
@@ -565,7 +592,7 @@ export function ModelConfigPage(): JSX.Element {
                   <Button
                     size="sm"
                     variant="secondary"
-                    loading={testingKey === config.id}
+                    loading={testingKeys.includes(config.id)}
                     onClick={() => {
                       void handleTestSaved(config);
                     }}

@@ -86,15 +86,24 @@ export function Modal({
     };
   }, [open, closeOnEsc, onClose]);
 
-  // 打开时锁定背景滚动
+  // 打开时锁定背景滚动 P2：多 Modal 堆叠时用计数器管理，避免互相覆盖
   useEffect(() => {
     if (!open || typeof document === 'undefined') {
       return;
     }
-    const previous: string = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
+    // 计数器存于 window 上，避免模块级变量在 HMR 时重置
+    const w = window as unknown as { __modalCount?: number; __savedOverflow?: string };
+    if ((w.__modalCount ?? 0) === 0) {
+      w.__savedOverflow = document.body.style.overflow;
+      document.body.style.overflow = 'hidden';
+    }
+    w.__modalCount = (w.__modalCount ?? 0) + 1;
     return () => {
-      document.body.style.overflow = previous;
+      const ww = window as unknown as { __modalCount?: number; __savedOverflow?: string };
+      ww.__modalCount = Math.max(0, (ww.__modalCount ?? 1) - 1);
+      if ((ww.__modalCount ?? 0) === 0) {
+        document.body.style.overflow = ww.__savedOverflow ?? '';
+      }
     };
   }, [open]);
 

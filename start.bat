@@ -12,9 +12,15 @@ echo   AI DouDiZhu Launcher
 echo ============================================================
 call :log "=== startup begin ==="
 
-REM --- Ensure node/npm are available: add known node dir to PATH ---
-set "NODE_HOME=C:\Users\asus\.workbuddy\binaries\node\versions\22.22.2"
-set "PATH=%NODE_HOME%;%PATH%"
+REM --- Ensure node/npm are available: prefer WORKBUDDY_NODE_HOME / NODE_HOME env, else rely on system PATH ---
+if defined WORKBUDDY_NODE_HOME (
+  set "PATH=%WORKBUDDY_NODE_HOME%;%PATH%"
+) else if defined NODE_HOME (
+  set "PATH=%NODE_HOME%;%PATH%"
+)
+REM Fallback: if node not in PATH, try known workbuddy install location (~\.workbuddy, non-fatal if not exist)
+where node >nul 2>nul
+if errorlevel 1 if exist "%USERPROFILE%\.workbuddy\binaries\node\versions\22.22.2\node.exe" set "PATH=%USERPROFILE%\.workbuddy\binaries\node\versions\22.22.2;%PATH%"
 
 where node >nul 2>nul
 if errorlevel 1 goto node_not_found

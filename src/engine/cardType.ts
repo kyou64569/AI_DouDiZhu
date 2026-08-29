@@ -169,12 +169,9 @@ export function identifyPattern(cards: Card[]): HandPattern | null {
     const quadRank: number = quadRanks[0];
 
     // 四带两张单牌（两张单牌不能是同一对，允许是一对吗？标准规则允许带一对拆成两张，
-    // 这里统一按「剩余 2 张任意牌」处理）
+    // 这里统一按「剩余 2 张任意牌」处理；total===6 时剩余恒为 2，无需再判断）
     if (total === 6 && buckets.length >= 2) {
-      const restCount: number = total - 4;
-      if (restCount === 2) {
-        return makePattern(CardType.FOUR_WITH_TWO, quadRank, 1, cards);
-      }
+      return makePattern(CardType.FOUR_WITH_TWO, quadRank, 1, cards);
     }
 
     // 四带两对（8 张）

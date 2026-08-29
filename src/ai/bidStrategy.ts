@@ -18,7 +18,7 @@ import {
   type AILogSink,
 } from '@/types/ai';
 import type { ThinkingMode } from '@/types/config';
-import { DEFAULT_TEMPERATURE, DEFAULT_THINKING_MODE } from '@/types/config';
+import { DEFAULT_THINKING_MODE } from '@/types/config';
 import { chatCompletion, AI_TIMEOUT_MS } from '@/api/llm';
 import { toErrorMessage } from '@/api/client';
 import { getLegalBids } from '@/engine/bidding';
@@ -27,6 +27,8 @@ import { RANK_BLACK_JOKER, RANK_RED_JOKER } from '@/engine/constants';
 import { buildBidMessages } from './promptBuilder';
 import { parseBidResponse, type ParsedBid } from './responseParser';
 import { resolveThinking } from './thinking';
+import { resolveDifficultyTemperature, resolveDifficultyThinking } from './difficulty';
+import { safeLog } from './safeLog';
 
 /** 手牌强度评估明细。 */
 export interface HandStrength {
@@ -180,25 +182,6 @@ function toLegalBidScore(value: number, highestBid: number): BidScore | null {
   return found === undefined ? null : found;
 }
 
-/** 安全触发日志回调，回调自身异常不影响主流程。 */
-function safeLog(
-  onLog: AILogSink | undefined,
-  seat: 0 | 1 | 2,
-  playerName: string,
-  level: 'info' | 'warn' | 'error',
-  message: string,
-  source?: DecisionSource,
-): void {
-  if (onLog === undefined) {
-    return;
-  }
-  try {
-    onLog({ seat, playerName, level, message, source });
-  } catch {
-    // 日志失败绝不影响决策
-  }
-}
-
 /**
  * 叫分决策主入口（AIBidDriver 实现）。
  *
@@ -211,6 +194,15 @@ export async function decideBid(input: AIBidInput): Promise<AIBidDecision> {
     return await runBidDecision(input, startedAt);
   } catch (error: unknown) {
     const message: string = toErrorMessage(error);
+    // L8：防御 input 异常导致二次抛异常
+    let safeOnLog: AILogSink | undefined;
+    let safeSeat: 0 | 1 | 2 = 0;
+    let safeName = 'AI';
+    try {
+      safeOnLog = (input as AIBidInput | null | undefined)?.onLog;
+      safeSeat = (input as AIBidInput | null | undefined)?.seat ?? 0;
+      safeName = (input as AIBidInput | null | undefined)?.playerName ?? 'AI';
+    } catch { /* ignore */ }
     const decision: AIBidDecision = {
       score: 0,
       reason: `编排层异常（${message}），已兜底不叫`,
@@ -219,9 +211,9 @@ export async function decideBid(input: AIBidInput): Promise<AIBidDecision> {
       latencyMs: Math.max(0, Date.now() - startedAt),
     };
     safeLog(
-      input.onLog,
-      input.seat,
-      input.playerName,
+      safeOnLog,
+      safeSeat,
+      safeName,
       'error',
       `编排层异常（${message}），已兜底不叫`,
       decision.source,
@@ -269,26 +261,23 @@ async function runBidDecision(input: AIBidInput, startedAt: number): Promise<AIB
   try {
     const messages: ChatMessage[] = buildBidMessages(input);
     const thinkingMode: ThinkingMode = binding.thinkingMode ?? DEFAULT_THINKING_MODE;
-    const resolvedThinking = resolveThinking(binding.model, thinkingMode);
-    // M4：推理模型思考耗时远超普通模型，超时随思考开启放大（默认 8s → 32s）
-    const effectiveTimeoutMs: number = resolvedThinking.thinking
-      ? Math.max(timeoutMs, timeoutMs * 4)
-      : timeoutMs;
+    const effectiveThinkingMode: ThinkingMode = resolveDifficultyThinking(binding.difficulty, thinkingMode);
+    const resolvedThinking = resolveThinking(binding.model, effectiveThinkingMode);
+    // 超时已由 settingsStore 统一计算，此处直接使用
+    const effectiveTimeoutMs: number = timeoutMs;
     const response = await chatCompletion(
       {
         baseUrl: binding.baseUrl,
         apiKey: binding.apiKey,
         model: binding.model,
         messages,
-        temperature:
-          typeof binding.temperature === 'number' && Number.isFinite(binding.temperature)
-            ? binding.temperature
-            : DEFAULT_TEMPERATURE,
+        // 难度覆盖温度：简单调高、困难/大师调低，普通沿用配置温度
+        temperature: resolveDifficultyTemperature(binding.difficulty, binding.temperature),
         thinking: resolvedThinking.thinking,
         reasoningEffort: resolvedThinking.reasoningEffort,
         timeoutMs: effectiveTimeoutMs,
       },
-      { timeoutMs: effectiveTimeoutMs },
+      { timeoutMs: effectiveTimeoutMs, signal: input.signal },
     );
     content = response.content;
   } catch (error: unknown) {

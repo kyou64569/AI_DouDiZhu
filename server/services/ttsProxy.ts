@@ -6,12 +6,18 @@
  */
 
 import {
-  ErrorCode,
   ProxyError,
   type TtsSynthesizeRequest,
   type TtsSynthesizeResponse,
 } from '../types.js';
 import { normalizeBaseUrl } from './llmProxy.js';
+import {
+  describeHttpStatus,
+  extractUpstreamError,
+  fetchWithTimeout,
+  mapHttpStatus,
+  readBodyWithTimeout,
+} from './httpUtils.js';
 import { logger, maskApiKey } from '../utils/logger.js';
 
 /** 默认转发超时（毫秒） */
@@ -20,70 +26,20 @@ const DEFAULT_TTS_TIMEOUT_MS: number = 15000;
 /** 合成文本长度上限（防滥用） */
 const MAX_INPUT_LEN: number = 200;
 
-/** 带超时的 fetch。超时/网络错误均归一化为 ProxyError。 */
-async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
-  const controller: AbortController = new AbortController();
-  const timer: ReturnType<typeof setTimeout> = setTimeout(() => {
-    controller.abort();
-  }, Math.max(1000, timeoutMs));
+/** TTS 代理的 fetch 选项（错误文案按 TTS 类别生成，DNS rebinding 校验默认开启）。 */
+const TTS_FETCH_OPTS = { kind: 'TTS' } as const;
 
-  try {
-    return await fetch(url, { ...init, signal: controller.signal });
-  } catch (err: unknown) {
-    const name: string = err instanceof Error ? err.name : '';
-    if (name === 'AbortError' || name === 'TimeoutError') {
-      throw new ProxyError(ErrorCode.NETWORK_TIMEOUT, `请求上游超时（${timeoutMs}ms）`);
-    }
-    const detail: string = err instanceof Error ? err.message : String(err);
-    throw new ProxyError(ErrorCode.NETWORK_UNREACHABLE, `无法连接上游 TTS 服务：${detail}`);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/** 把上游 HTTP 状态码归一化为内部错误码。 */
-function mapHttpStatus(status: number): (typeof ErrorCode)[keyof typeof ErrorCode] {
-  if (status === 401 || status === 403) return ErrorCode.UPSTREAM_AUTH_FAILED;
-  if (status === 404) return ErrorCode.UPSTREAM_NOT_FOUND;
-  if (status === 429) return ErrorCode.UPSTREAM_RATE_LIMITED;
-  if (status >= 500) return ErrorCode.UPSTREAM_SERVER_ERROR;
-  return ErrorCode.UPSTREAM_BAD_REQUEST;
-}
-
-/** HTTP 状态码对应的中文说明。 */
-function describeHttpStatus(status: number): string {
-  if (status === 401 || status === 403) return 'API Key 认证失败，请检查密钥是否正确、是否拥有 TTS 接口权限';
-  if (status === 404) return '上游 TTS 接口不存在，请检查 baseUrl 是否正确（常见形如 https://api.openai.com/v1）';
-  if (status === 429) return '上游 TTS 服务限流，请稍后重试';
-  if (status >= 500) return `上游 TTS 服务内部错误（HTTP ${status}）`;
-  return `上游 TTS 返回错误（HTTP ${status}）`;
-}
-
-/** 读取上游错误响应体并提取安全的错误描述（绝不回显 apiKey）。 */
-async function extractUpstreamError(response: Response): Promise<string> {
-  let text: string = '';
-  try {
-    text = await response.text();
-  } catch {
-    text = '';
-  }
-  if (text.length === 0) return '';
-
-  try {
-    const parsed: unknown = JSON.parse(text);
-    if (parsed !== null && typeof parsed === 'object') {
-      const obj = parsed as Record<string, unknown>;
-      const errField = obj.error;
-      if (errField !== null && typeof errField === 'object') {
-        const msg = (errField as Record<string, unknown>).message;
-        if (typeof msg === 'string' && msg.length > 0) return msg.slice(0, 300);
-      }
-      if (typeof obj.message === 'string' && obj.message.length > 0) return obj.message.slice(0, 300);
-    }
-  } catch {
-    // 非 JSON，退化为截断纯文本
-  }
-  return text.slice(0, 300);
+/**
+ * 带超时读取音频响应体（M-1 修复：原 arrayBuffer() 无超时，上游慢流/挂起会长期占用连接）。
+ * 读取过程中实时校验大小，超限即中止（防 DoS/OOM）。
+ *
+ * @throws ProxyError 读取超时或超过 maxBytes 时
+ */
+async function readAudioWithTimeout(response: Response, timeoutMs: number, maxBytes: number): Promise<ArrayBuffer> {
+  const bytes: Uint8Array = await readBodyWithTimeout(response, timeoutMs, maxBytes);
+  const buf: ArrayBuffer = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(buf).set(bytes);
+  return buf;
 }
 
 /**
@@ -130,14 +86,15 @@ export async function synthesizeSpeech(req: TtsSynthesizeRequest): Promise<TtsSy
       body: JSON.stringify(body),
     },
     timeoutMs,
+    TTS_FETCH_OPTS,
   );
 
   const latencyMs: number = Date.now() - startedAt;
 
   if (!response.ok) {
-    const detail: string = await extractUpstreamError(response);
+    const detail: string = await extractUpstreamError(response, 300);
     const code = mapHttpStatus(response.status);
-    const message: string = detail.length > 0 ? `${describeHttpStatus(response.status)}：${detail}` : describeHttpStatus(response.status);
+    const message: string = detail.length > 0 ? `${describeHttpStatus(response.status, 'TTS')}：${detail}` : describeHttpStatus(response.status, 'TTS');
     logger.error('tts/synthesize', '上游返回错误', {
       baseUrl,
       key: maskApiKey(req.apiKey),
@@ -148,7 +105,9 @@ export async function synthesizeSpeech(req: TtsSynthesizeRequest): Promise<TtsSy
     throw new ProxyError(code, message, response.status);
   }
 
-  const buf: ArrayBuffer = await response.arrayBuffer();
+  // M-1：带超时读取音频 body，读取中即校验大小（上游慢流/挂起不再长期占连接）
+  const MAX_AUDIO_SIZE: number = 5 * 1024 * 1024; // P2 音频 DoS 防护：5MB 上限（约数分钟音频）
+  const buf: ArrayBuffer = await readAudioWithTimeout(response, timeoutMs, MAX_AUDIO_SIZE);
   const audioBase64: string = Buffer.from(buf).toString('base64');
   const contentType: string = response.headers.get('content-type') ?? 'audio/mpeg';
 

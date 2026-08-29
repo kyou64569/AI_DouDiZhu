@@ -4,7 +4,7 @@
 
 import type { Card } from './card';
 import type { BidRecord, BidScore, PlayRecord, SeatIndex } from './game';
-import type { ThinkingMode } from './config';
+import type { Difficulty, Personality, ThinkingMode } from './config';
 
 /** 决策来源 —— 用于日志标注与 QA 判断降级是否生效 */
 export enum DecisionSource {
@@ -80,6 +80,10 @@ export interface AIModelBinding {
   thinkingMode?: ThinkingMode;
   /** 采样温度 0~2，缺省回落 0.3 */
   temperature?: number;
+  /** 决策难度（简单/普通/困难/大师），缺省回落 normal；影响温度、思考强度与提示词分层 */
+  difficulty?: Difficulty;
+  /** 决策性格（激进/均衡/保守），缺省回落 balanced；注入提示词影响风格 */
+  personality?: Personality;
 }
 
 /** 日志回调：编排层向外吐日志，由调用方决定写到哪里 */
@@ -115,6 +119,8 @@ export interface AIPlayInput {
   timeoutMs?: number;
   /** 日志回调 */
   onLog?: AILogSink;
+  /** 外部中止信号（H1：对局切换时中止在途 LLM 请求） */
+  signal?: AbortSignal;
 }
 
 /** AI 叫分决策的输入快照 */
@@ -130,6 +136,8 @@ export interface AIBidInput {
   highestBid: number;
   timeoutMs?: number;
   onLog?: AILogSink;
+  /** 外部中止信号（H1：对局切换时中止在途 LLM 请求） */
+  signal?: AbortSignal;
 }
 
 /** AI 叫分决策结果 */

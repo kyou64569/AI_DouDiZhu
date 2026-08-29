@@ -228,6 +228,21 @@ function validateCredentials(cred: LLMCredentials): string | null {
   return null;
 }
 
+/** 已警告过的 http baseUrl（会话级去重，避免保存/测试/拉模型连续操作时重复弹 toast） */
+const insecureWarned: Set<string> = new Set<string>();
+
+/**
+ * M-4：Base URL 使用 http 明文协议时给出安全警告（不阻断——本地 Ollama 等场景仍需 http）。
+ * 同一 baseUrl 仅在会话内警告一次。
+ */
+function warnIfInsecureBaseUrl(baseUrl: string): void {
+  const trimmed: string = baseUrl.trim();
+  if (/^http:\/\//i.test(trimmed) && !insecureWarned.has(trimmed)) {
+    insecureWarned.add(trimmed);
+    toast.warning('该 Base URL 使用 http 明文协议，API Key 将明文传输，建议仅用于本地可信环境');
+  }
+}
+
 /** configStore 的 state 与 action */
 export interface ConfigStoreState {
   /** 全部模型配置 */
@@ -239,11 +254,11 @@ export interface ConfigStoreState {
   /** 已拉取的模型列表（含展示名），key 同上。不持久化 */
   fetchedModels: Record<string, ModelItem[]>;
 
-  /** 正在执行连通性测试的 key，空闲为 null */
-  testingKey: string | null;
+  /** 正在执行连通性测试的 key 集合（支持并发，M-6） */
+  testingKeys: string[];
 
-  /** 正在拉取模型列表的 key，空闲为 null */
-  fetchingKey: string | null;
+  /** 正在拉取模型列表的 key 集合（支持并发，M-6） */
+  fetchingKeys: string[];
 
   /** 重新从 localStorage 载入 */
   hydrate: () => void;
@@ -292,8 +307,8 @@ export const useConfigStore = create<ConfigStoreState>((set, get) => ({
   configs: loadConfigs(),
   testResults: {},
   fetchedModels: {},
-  testingKey: null,
-  fetchingKey: null,
+  testingKeys: [],
+  fetchingKeys: [],
 
   hydrate: (): void => {
     set({ configs: loadConfigs() });
@@ -304,6 +319,7 @@ export const useConfigStore = create<ConfigStoreState>((set, get) => ({
     if (error !== null) {
       return { ok: false, message: error };
     }
+    warnIfInsecureBaseUrl(input.baseUrl);
 
     const now: number = Date.now();
     const available: string[] = [...input.availableModels];
@@ -337,6 +353,7 @@ export const useConfigStore = create<ConfigStoreState>((set, get) => ({
     if (error !== null) {
       return { ok: false, message: error };
     }
+    warnIfInsecureBaseUrl(input.baseUrl);
 
     const available: string[] = [...input.availableModels];
     const updated: ModelConfig = {
@@ -392,8 +409,10 @@ export const useConfigStore = create<ConfigStoreState>((set, get) => ({
       toast.warning(invalid);
       return [];
     }
+    warnIfInsecureBaseUrl(cred.baseUrl);
 
-    set({ fetchingKey: key });
+    // M-6：进行中 key 用数组集合管理，支持并发互不覆盖
+    set((state: ConfigStoreState) => ({ fetchingKeys: [...state.fetchingKeys, key] }));
     try {
       const res = await apiFetchModels({
         baseUrl: normalizeBaseUrl(cred.baseUrl),
@@ -414,7 +433,9 @@ export const useConfigStore = create<ConfigStoreState>((set, get) => ({
       toast.error(`拉取模型失败：${toErrorMessage(err)}`);
       return [];
     } finally {
-      set({ fetchingKey: null });
+      set((state: ConfigStoreState) => ({
+        fetchingKeys: state.fetchingKeys.filter((k: string): boolean => k !== key),
+      }));
     }
   },
 
@@ -432,7 +453,8 @@ export const useConfigStore = create<ConfigStoreState>((set, get) => ({
       return result;
     }
 
-    set({ testingKey: key });
+    warnIfInsecureBaseUrl(cred.baseUrl);
+    set((state: ConfigStoreState) => ({ testingKeys: [...state.testingKeys, key] }));
     const startedAt: number = Date.now();
     try {
       const res = await apiTestConnection({
@@ -464,7 +486,9 @@ export const useConfigStore = create<ConfigStoreState>((set, get) => ({
       toast.error(`连通性测试失败：${message}`);
       return result;
     } finally {
-      set({ testingKey: null });
+      set((state: ConfigStoreState) => ({
+        testingKeys: state.testingKeys.filter((k: string): boolean => k !== key),
+      }));
     }
   },
 

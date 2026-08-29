@@ -105,6 +105,9 @@ function resolveBinding(aiPlayerId: string | undefined): AIModelBinding | null {
     model,
     thinkingMode: config.thinkingMode,
     temperature: config.temperature,
+    // 难度 / 性格属于 AI 玩家自身属性，随绑定快照一起下发（建议清单 #1/#2）
+    difficulty: player.difficulty,
+    personality: player.personality,
   };
 }
 
@@ -424,9 +427,12 @@ export function resetAIDrivers(): void {
  *
  * 一旦状态零变化，UI 侧 effect 依赖不变 ⇒ 定时器不再重挂 ⇒ 整局永久死锁，
  * 因此 `aiAct` 必须自己兜底把状态推动起来。
+ *
+ * H1：游标首项为 `gameId`（对局代际），新开一局即递增，即使 phase/座位/长度巧合相同
+ * 也能识别为不同对局，避免「旧局决策写入新局」的污染。
  */
 function cursorOf(s: GameStoreState): string {
-  return `${s.phase}|${s.currentSeat}|${s.bidHistory.length}|${s.playHistory.length}|${s.redealCount}|${s.turn}`;
+  return `${s.gameId}|${s.phase}|${s.currentSeat}|${s.bidHistory.length}|${s.playHistory.length}|${s.redealCount}|${s.turn}`;
 }
 
 /**
@@ -436,6 +442,12 @@ function cursorOf(s: GameStoreState): string {
  * 基于同一份旧快照决策，产生重复出牌或对错误座位下手。
  */
 let aiActing: boolean = false;
+
+/** H1：对局代际计数器，每次 startGame/resetGame 递增，保证 cursor 代际唯一 */
+let gameEpoch: number = 0;
+
+/** H1：在途 AI 调用的 AbortController，新对局时 abort 旧请求以释放连接 */
+let aiAbortController: AbortController | null = null;
 
 /** 安全提取异常文本（驱动器可能 throw 任意值） */
 function errText(err: unknown): string {
@@ -459,8 +471,11 @@ function emptyPlayer(seat: SeatIndex): Player {
   return { seat, name: '', kind: 'AI', hand: [], isLandlord: false };
 }
 
-/** 依据房间座位构造对局三玩家（含 AI 展示名 / 头像解析） */
+/** 依据房间座位构造对局三玩家（含 AI 展示名 / 头像解析）P2 防御：校验 seats 长度 */
 function buildPlayers(room: Room): [Player, Player, Player] {
+  if (!Array.isArray(room.seats) || room.seats.length !== 3) {
+    throw new Error('房间座位数据异常：seats 长度必须为 3');
+  }
   const names: Record<number, string> = {};
   const avatars: Record<number, string | undefined> = {};
   for (const seat of room.seats) {
@@ -514,6 +529,8 @@ const IDLE_STATE: GameState = {
 
 /** gameStore 的完整 state 形状（GameState 契约 + UI 辅助态 + actions） */
 export interface GameStoreState extends GameState {
+  /** H1：对局代际 id，startGame/resetGame 时递增，用于丢弃过期 AI 决策 */
+  gameId: number;
   /** 人类座位；观战模式为 null */
   humanSeat: SeatIndex | null;
   /** 当前对局模式 */
@@ -606,17 +623,19 @@ export const useGameStore = create<GameStoreState>((set, get) => {
     }
   }
 
-  /** 结算：计算并写入 SettlementResult，进入 SETTLED，并落库历史记录 */
-  function settle(winnerSeat: SeatIndex): void {
-    const st = get();
+  /**
+   * 结算收尾副作用：停背景音、胜负音效、AI 台词、落库历史。
+   * 不做任何 set —— phase 切换与 settlement 写入由调用方原子完成
+   * （playCards 胜利路径合并出完牌与结算为一次 set，避免「手牌空但仍 PLAYING」中间态）。
+   * playHistory 传本次对局的完整出牌记录（胜利路径须含最后一手牌）。
+   */
+  function finalizeSettlement(
+    st: GameStoreState,
+    winnerSeat: SeatIndex,
+    settlement: SettlementResult,
+    playHistory: PlayRecord[],
+  ): void {
     const landlordWin: boolean = winnerSeat === (st.landlordSeat as SeatIndex);
-    const settlement: SettlementResult = calculateSettlement({
-      landlordSeat: st.landlordSeat as SeatIndex,
-      landlordWin,
-      baseScore: st.baseScore,
-      playHistory: st.playHistory,
-    });
-    set({ phase: GamePhase.SETTLED, settlement });
     // 对局结束：停背景音，并按「人类是否获胜」播放胜负提示
     stopBackground();
     const humanSeat: SeatIndex | null = st.humanSeat;
@@ -657,7 +676,7 @@ export const useGameStore = create<GameStoreState>((set, get) => {
         multiplierDetail: settlement.multiplierDetail,
         seats,
         bidHistory: st.bidHistory,
-        playHistory: st.playHistory,
+        playHistory,
       };
       useHistoryStore.getState().addRecord(record);
     } catch (err: unknown) {
@@ -692,6 +711,7 @@ export const useGameStore = create<GameStoreState>((set, get) => {
       // 思考态进一步放宽到 30s / 60s
       timeoutMs: resolveTimeoutMs(st.roomMode, thinkingOn),
       onLog: logSink,
+      signal: aiAbortController?.signal,
     };
   }
 
@@ -729,11 +749,13 @@ export const useGameStore = create<GameStoreState>((set, get) => {
       // 同上：叫分阶段也遵循同一份按模式区分的超时设置；思考态放宽
       timeoutMs: resolveTimeoutMs(st.roomMode, thinkingOn),
       onLog: logSink,
+      signal: aiAbortController?.signal,
     };
   }
 
   return {
     ...IDLE_STATE,
+    gameId: 0,
     humanSeat: null,
     roomMode: null,
     selectedCardIds: [],
@@ -748,6 +770,15 @@ export const useGameStore = create<GameStoreState>((set, get) => {
         return false;
       }
 
+      // H1：新对局即递增代际并中止在途 AI 请求，防止旧局决策污染新局
+      if (aiAbortController) {
+        try { aiAbortController.abort(); } catch { /* ignore */ }
+        aiAbortController = null;
+      }
+      aiActing = false;
+      gameEpoch += 1;
+      urgedTurnKey = null;
+
       // 进入新对局前先停掉上一局可能残留的背景音
       stopBackground();
       // 新开局：清空上一局残留的 AI 思考日志（修复：观战模式进入牌桌后残留上次内容）
@@ -759,6 +790,7 @@ export const useGameStore = create<GameStoreState>((set, get) => {
 
       set({
         ...IDLE_STATE,
+        gameId: gameEpoch,
         phase: GamePhase.BIDDING,
         players: [
           { ...players[0], hand: deal.hands[0] },
@@ -897,24 +929,33 @@ export const useGameStore = create<GameStoreState>((set, get) => {
         playPattern.type === (CardType.BOMB as CardType) || playPattern.type === (CardType.ROCKET as CardType);
       const multiplier: number = isBomb ? st.multiplier * 2 : st.multiplier;
 
-      const players: [Player, Player, Player] = [
-        st.players[0].seat === seat ? { ...st.players[0], hand: newHand } : st.players[0],
-        st.players[1].seat === seat ? { ...st.players[1], hand: newHand } : st.players[1],
-        st.players[2].seat === seat ? { ...st.players[2], hand: newHand } : st.players[2],
-      ];
+      // P2 简化：直接按座位索引更新，避免 seat 字段间接匹配
+      const players: [Player, Player, Player] = [...st.players] as [Player, Player, Player];
+      players[seat] = { ...players[seat], hand: newHand };
 
       if (newHand.length === 0) {
+        // P1 原子化：出完牌+结算合并为一次 set，避免中间态 [手牌空但仍 PLAYING] 暴露
+        const winningPlayHistory: PlayRecord[] = [...st.playHistory, record];
+        const settlement: SettlementResult = calculateSettlement({
+          landlordSeat: st.landlordSeat as SeatIndex,
+          landlordWin: seat === st.landlordSeat,
+          baseScore: st.baseScore,
+          playHistory: winningPlayHistory,
+        });
         set({
           players,
-          playHistory: [...st.playHistory, record],
+          playHistory: winningPlayHistory,
           lastPlay: record,
           isFreeTurn: false,
           multiplier,
           turn: st.turn + 1,
+          phase: GamePhase.SETTLED,
+          settlement,
         });
         playSfx(isBomb ? 'bomb' : 'play');
-      announcePlay(seat, playPattern);
-        settle(seat);
+        announcePlay(seat, playPattern);
+        // 背景音 / 胜负音效 / AI 台词 / 落库历史等副作用统一走共享收尾
+        finalizeSettlement(st, seat, settlement, winningPlayHistory);
         return true;
       }
 
@@ -982,6 +1023,9 @@ export const useGameStore = create<GameStoreState>((set, get) => {
       // 两个 await 基于同一旧快照决策会导致重复出牌 / 错座位动作。
       if (aiActing) return;
       aiActing = true;
+      // H1：为本次决策创建独立的 AbortController，startGame/resetGame 时可中止在途 LLM
+      const controller: AbortController = new AbortController();
+      aiAbortController = controller;
 
       try {
         const st = get();
@@ -1145,6 +1189,9 @@ export const useGameStore = create<GameStoreState>((set, get) => {
         }
       } finally {
         aiActing = false;
+        if (aiAbortController === controller) {
+          aiAbortController = null;
+        }
       }
     },
 
@@ -1236,11 +1283,17 @@ export const useGameStore = create<GameStoreState>((set, get) => {
 
     resetGame: (): void => {
       stopBackground();
-      // H1：释放重入锁，防止退出/重开对局时在途 aiAct 锁死新局 AI 回合
-      //（在途调用恢复后经 cursorOf 代际校验会自行丢弃过期决策）
+      // H1：中止在途 AI 请求并释放重入锁，防止退出/重开对局时在途 aiAct 锁死新局
+      if (aiAbortController) {
+        try { aiAbortController.abort(); } catch { /* ignore */ }
+        aiAbortController = null;
+      }
       aiActing = false;
+      gameEpoch += 1;
+      urgedTurnKey = null;
       set({
         ...IDLE_STATE,
+        gameId: gameEpoch,
         humanSeat: null,
         roomMode: null,
         selectedCardIds: [],

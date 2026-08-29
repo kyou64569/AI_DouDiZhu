@@ -14,9 +14,13 @@ import {
   type TtsSynthesizeResponse,
 } from '../types.js';
 import { synthesizeSpeech } from '../services/ttsProxy.js';
-import { logger, maskApiKey } from '../utils/logger.js';
+import { rateLimit } from '../services/httpUtils.js';
+import { logger } from '../utils/logger.js';
 
 const router: Router = Router();
+
+// 轻量限流（共享实现见 services/httpUtils.ts，同 llm）
+const ttsLimiter = rateLimit(20, 60_000);
 
 /** 构造成功响应信封 */
 function ok<T>(data: T): ApiResponse<T> {
@@ -45,11 +49,12 @@ function requireBaseFields(body: unknown): { baseUrl: string; apiKey: string } {
 function requireTtsFields(body: unknown): { model: string; voice: string; input: string; speed?: number } {
   const obj = body as Record<string, unknown>;
   const model: string = typeof obj.model === 'string' ? obj.model.trim() : '';
-  if (model.length === 0) throw new ProxyError(ErrorCode.MISSING_MODEL, '缺少 model');
+  if (model.length === 0 || model.length > 128) throw new ProxyError(ErrorCode.MISSING_MODEL, 'model 不能为空且长度不超过 128');
   const voice: string = typeof obj.voice === 'string' ? obj.voice.trim() : '';
-  if (voice.length === 0) throw new ProxyError(ErrorCode.MISSING_VOICE, '缺少 voice');
+  if (voice.length === 0 || voice.length > 64) throw new ProxyError(ErrorCode.MISSING_VOICE, 'voice 不能为空且长度不超过 64');
   const input: string = typeof obj.input === 'string' ? obj.input.trim() : '';
   if (input.length === 0) throw new ProxyError(ErrorCode.MISSING_INPUT, '缺少 input（合成文本）');
+  if (input.length > 5000) throw new ProxyError(ErrorCode.INVALID_BODY, 'input 过长（>5000）');
   const speed: number | undefined =
     typeof obj.speed === 'number' && Number.isFinite(obj.speed) ? obj.speed : undefined;
   return { model, voice, input, speed };
@@ -64,14 +69,14 @@ function sendError(res: Response, module: string, err: unknown): void {
   }
   const detail: string = err instanceof Error ? err.message : String(err);
   logger.error(module, '未知异常', { msg: detail });
-  res.status(200).json(fail(ErrorCode.UNKNOWN, `服务内部错误：${detail}`));
+  res.status(500).json(fail(ErrorCode.UNKNOWN, '服务内部错误，请稍后重试'));
 }
 
 /**
  * POST /api/tts/synthesize
  * TTS 语音合成透传。
  */
-router.post('/synthesize', async (req: Request, res: Response): Promise<void> => {
+router.post('/synthesize', ttsLimiter, async (req: Request, res: Response): Promise<void> => {
   const module = 'tts/synthesize';
   try {
     const base = requireBaseFields(req.body);

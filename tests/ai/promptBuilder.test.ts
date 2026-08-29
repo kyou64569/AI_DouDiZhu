@@ -5,6 +5,8 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  buildBidSystemPrompt,
+  buildPlayMessages,
   buildPlaySystemPrompt,
   buildPlayUserPrompt,
 } from '@/ai/promptBuilder';
@@ -85,5 +87,107 @@ describe('提示词 · 合法出牌选项注入（治本：不让模型自己数
     const user: string = buildPlayUserPrompt(baseInput({ isFreeTurn: true, lastPlay: null }));
     expect(user).toContain('合法出牌选项');
     expect(user).toContain('挑选最合适的一手打出');
+  });
+});
+
+describe('提示词 · 记牌器与对手建模（建议清单 #6/#7）', () => {
+  it('默认难度：注入「记牌器」统计与「未见面牌」推断', () => {
+    const played = hand('3 3 3 3'); // 别家出过 4 张 3
+    const user: string = buildPlayUserPrompt(
+      baseInput({
+        hand: hand('K K 5'),
+        isFreeTurn: true,
+        lastPlay: null,
+        playHistory: [
+          { seat: 1, cards: played, pattern: pattern('3 3 3 3'), isPass: false, turn: 0 },
+        ],
+      }),
+    );
+    expect(user).toContain('记牌器');
+    expect(user).toContain('3×4'); // 已出统计
+    expect(user).toContain('已全部出完'); // 推断：3 出完，对手不可能再有 3
+  });
+
+  it('未见面牌扣除自己的手牌：手上 2 张 K 时提示 K×2 未见', () => {
+    const user: string = buildPlayUserPrompt(
+      baseInput({
+        hand: hand('K K 5'),
+        isFreeTurn: true,
+        lastPlay: null,
+        playHistory: [
+          { seat: 1, cards: hand('4 4'), pattern: pattern('4 4'), isPass: false, turn: 0 },
+        ],
+      }),
+    );
+    expect(user).toContain('K×2');
+  });
+
+  it('对手建模：聚合过牌次数与炸弹使用，生成倾向标注', () => {
+    const user: string = buildPlayUserPrompt(
+      baseInput({
+        hand: hand('3 4 5'),
+        isFreeTurn: true,
+        lastPlay: null,
+        playHistory: [
+          { seat: 1, cards: hand('8 8 8 8'), pattern: pattern('8 8 8 8'), isPass: false, turn: 0 },
+          { seat: 2, cards: [], pattern: null, isPass: true, turn: 1 },
+          { seat: 2, cards: [], pattern: null, isPass: true, turn: 2 },
+        ],
+      }),
+    );
+    expect(user).toContain('对手行为建模');
+    expect(user).toContain('用过 1 次炸弹'); // 座位1
+    expect(user).toContain('过牌 2 次'); // 座位2
+  });
+
+  it('简单难度：不注入记牌器与对手建模（刻意「看不牌」）', () => {
+    const user: string = buildPlayUserPrompt(
+      baseInput({
+        binding: { baseUrl: 'http://llm.test', apiKey: 'k', model: 'm', difficulty: 'easy' },
+        isFreeTurn: true,
+        lastPlay: null,
+        playHistory: [
+          { seat: 1, cards: hand('4 4'), pattern: pattern('4 4'), isPass: false, turn: 0 },
+        ],
+      }),
+    );
+    expect(user).not.toContain('记牌器');
+    expect(user).not.toContain('对手行为建模');
+    expect(user).not.toContain('近期出牌记录');
+  });
+});
+
+describe('提示词 · 难度与性格注入（建议清单 #1/#2）', () => {
+  it('困难档：system 提示词包含战术压制指令；大师档包含 few-shot 示范', () => {
+    const hardSys: string = buildPlaySystemPrompt({ difficulty: 'hard' });
+    expect(hardSys).toContain('精确压制');
+
+    const masterSys: string = buildPlaySystemPrompt({ difficulty: 'master' });
+    expect(masterSys).toContain('示范决策');
+    expect(masterSys).toContain('"action":"play"');
+  });
+
+  it('简单档：system 提示词淡化为休闲玩家口吻', () => {
+    const sys: string = buildPlaySystemPrompt({ difficulty: 'easy' });
+    expect(sys).toContain('休闲');
+    expect(sys).not.toContain('记牌：');
+  });
+
+  it('性格注入：激进 / 保守在出牌与叫分 system 提示词中呈现相反风格', () => {
+    const aggressivePlay: string = buildPlaySystemPrompt({ personality: 'aggressive' });
+    expect(aggressivePlay).toContain('激进');
+    const conservativePlay: string = buildPlaySystemPrompt({ personality: 'conservative' });
+    expect(conservativePlay).toContain('保守');
+    expect(buildPlaySystemPrompt()).toContain('均衡');
+
+    expect(buildBidSystemPrompt({ personality: 'aggressive' })).toContain('敢于抢当地主');
+    expect(buildBidSystemPrompt({ personality: 'conservative' })).toContain('从严评估牌力');
+  });
+
+  it('消息组装：难度从 binding 透传进 system 提示词', () => {
+    const messages = buildPlayMessages(
+      baseInput({ binding: { baseUrl: 'http://llm.test', apiKey: 'k', model: 'm', difficulty: 'master' } }),
+    );
+    expect(messages[0].content).toContain('示范决策');
   });
 });

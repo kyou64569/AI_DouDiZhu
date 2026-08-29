@@ -119,6 +119,27 @@ const config: Config = {
           '0%, 100%': { transform: 'translateY(0)' },
           '50%': { transform: 'translateY(-7px)' },
         },
+        /** 炸弹/王炸屏幕震动（建议清单 #10） */
+        'bomb-shake': {
+          '0%, 100%': { transform: 'translate(0, 0) rotate(0deg)' },
+          '15%': { transform: 'translate(-6px, 2px) rotate(-0.6deg)' },
+          '30%': { transform: 'translate(5px, -3px) rotate(0.5deg)' },
+          '45%': { transform: 'translate(-4px, -2px) rotate(-0.4deg)' },
+          '60%': { transform: 'translate(4px, 3px) rotate(0.4deg)' },
+          '75%': { transform: 'translate(-2px, 1px) rotate(-0.2deg)' },
+        },
+        /** 炸弹冲击波光圈（中心扩散淡出） */
+        'bomb-flash': {
+          '0%': { opacity: '0.85', transform: 'scale(0.35)' },
+          '100%': { opacity: '0', transform: 'scale(1.9)' },
+        },
+        /** 炸弹横幅砸入 */
+        'bomb-banner': {
+          '0%': { opacity: '0', transform: 'scale(2.1)' },
+          '55%': { opacity: '1', transform: 'scale(0.94)' },
+          '75%': { transform: 'scale(1.05)' },
+          '100%': { opacity: '1', transform: 'scale(1)' },
+        },
       },
       animation: {
         'fade-in': 'fade-in 0.2s ease-out',
@@ -129,6 +150,9 @@ const config: Config = {
         'pulse-ring': 'pulse-ring 1.6s cubic-bezier(0.4, 0, 0.6, 1) infinite',
         shine: 'shine 2.8s ease-in-out infinite',
         'float-slow': 'float-slow 3.6s ease-in-out infinite',
+        'bomb-shake': 'bomb-shake 0.55s ease-out 1',
+        'bomb-flash': 'bomb-flash 0.7s ease-out 1 both',
+        'bomb-banner': 'bomb-banner 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) both',
       },
     },
   },

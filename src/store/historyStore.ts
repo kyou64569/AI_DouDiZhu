@@ -11,7 +11,7 @@
  */
 
 import { create } from 'zustand';
-import { isNonEmptyString, isPlainObject, readArray, STORAGE_KEYS, writeJson } from './persist';
+import { ensureDataVersion, isNonEmptyString, isPlainObject, readArray, STORAGE_KEYS, writeJson } from './persist';
 import type { GameRecord, LeaderboardEntry } from '@/types/history';
 import type { SeatIndex } from '@/types/game';
 
@@ -133,11 +133,13 @@ export const useHistoryStore = create<HistoryStoreState>((set, get) => ({
     }
     const next: GameRecord[] = [record, ...get().records].slice(0, MAX_RECORDS);
     set({ records: next });
+    ensureDataVersion();
     writeJson(STORAGE_KEYS.HISTORY, next);
   },
 
   clear: () => {
     set({ records: [] });
+    ensureDataVersion();
     writeJson(STORAGE_KEYS.HISTORY, []);
   },
 }));

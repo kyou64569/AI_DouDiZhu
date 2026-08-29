@@ -52,7 +52,7 @@ const LABEL_TO_RANK: Readonly<Record<string, number>> = {
   '2': 15,
   '15': 15,
   TWO: 15,
-  // 小王
+  // 小王（P1 报告提及 '小' 单字映射：为精确相等匹配，非子串，意图兼容模型简写“小”=小王，已评估为必要） 
   小王: RANK_BLACK_JOKER,
   小: RANK_BLACK_JOKER,
   BJ: RANK_BLACK_JOKER,
@@ -62,7 +62,7 @@ const LABEL_TO_RANK: Readonly<Record<string, number>> = {
   黑桃JOKER: RANK_BLACK_JOKER,
   '16': RANK_BLACK_JOKER,
   鬼: RANK_BLACK_JOKER,
-  // 大王
+  // 大王（同上，'大' 精确匹配大王简写） 
   大王: RANK_RED_JOKER,
   大: RANK_RED_JOKER,
   RJ: RANK_RED_JOKER,

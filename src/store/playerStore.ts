@@ -9,8 +9,8 @@
  */
 
 import { create } from 'zustand';
-import type { AIPlayer, Persona } from '@/types/config';
-import { PERSONAS } from '@/types/config';
+import type { AIPlayer, Difficulty, Persona, Personality } from '@/types/config';
+import { DIFFICULTIES, PERSONALITIES, PERSONAS } from '@/types/config';
 import { createId } from '@/utils/id';
 import { toast } from '@/components/common/Toast';
 import { useRoomStore } from './roomStore';
@@ -44,6 +44,10 @@ export interface AIPlayerInput {
   ttsConfigId?: string;
   /** 台词人设（可选） */
   persona?: string;
+  /** 决策难度（可选；'' 表示跟随默认「普通」） */
+  difficulty?: string;
+  /** 决策性格（可选；'' 表示跟随默认「均衡」） */
+  personality?: string;
 }
 
 /** 变更结果，供页面统一处理提示 */
@@ -66,6 +70,8 @@ export const EMPTY_PLAYER_INPUT: AIPlayerInput = {
   ttsModel: '',
   ttsConfigId: '',
   persona: '',
+  difficulty: '',
+  personality: '',
 };
 
 /** 名称最大长度 */
@@ -102,6 +108,8 @@ function normalizePlayer(raw: AIPlayer): AIPlayer {
     ttsModel: isTtsModelValue(record.ttsModel) ? record.ttsModel.trim() : undefined,
     ttsConfigId: optionalText(record.ttsConfigId),
     persona: isPersona(record.persona) ? (record.persona as Persona) : undefined,
+    difficulty: isDifficulty(record.difficulty) ? (record.difficulty as Difficulty) : undefined,
+    personality: isPersonality(record.personality) ? (record.personality as Personality) : undefined,
     createdAt: toFiniteNumber(record.createdAt, now),
     updatedAt: toFiniteNumber(record.updatedAt, now),
   };
@@ -157,6 +165,16 @@ function isTtsModelValue(value: unknown): value is string {
 /** 人设守卫 */
 function isPersona(value: unknown): value is Persona {
   return typeof value === 'string' && (PERSONAS as readonly string[]).includes(value);
+}
+
+/** 难度守卫 */
+function isDifficulty(value: unknown): value is Difficulty {
+  return typeof value === 'string' && (DIFFICULTIES as readonly string[]).includes(value);
+}
+
+/** 性格守卫 */
+function isPersonality(value: unknown): value is Personality {
+  return typeof value === 'string' && (PERSONALITIES as readonly string[]).includes(value);
 }
 
 export function validatePlayerInput(input: AIPlayerInput): string | null {
@@ -233,6 +251,8 @@ export const usePlayerStore = create<PlayerStoreState>((set, get) => ({
       ttsModel: isTtsModelValue(input.ttsModel) ? input.ttsModel.trim() : undefined,
       ttsConfigId: optionalText(input.ttsConfigId),
       persona: isPersona(input.persona) ? (input.persona as Persona) : undefined,
+      difficulty: isDifficulty(input.difficulty) ? (input.difficulty as Difficulty) : undefined,
+      personality: isPersonality(input.personality) ? (input.personality as Personality) : undefined,
       createdAt: now,
       updatedAt: now,
     };
@@ -269,6 +289,8 @@ export const usePlayerStore = create<PlayerStoreState>((set, get) => ({
       ttsModel: isTtsModelValue(input.ttsModel) ? input.ttsModel.trim() : undefined,
       ttsConfigId: optionalText(input.ttsConfigId),
       persona: isPersona(input.persona) ? (input.persona as Persona) : undefined,
+      difficulty: isDifficulty(input.difficulty) ? (input.difficulty as Difficulty) : undefined,
+      personality: isPersonality(input.personality) ? (input.personality as Personality) : undefined,
       updatedAt: Date.now(),
     };
 

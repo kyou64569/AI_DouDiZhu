@@ -54,11 +54,19 @@ function remove(id: string): void {
   emit();
 }
 
-/** 追加一条提示 */
+/** 追加一条提示 P1：超出 MAX_VISIBLE 时清理被丢弃项的定时器 */
 function push(type: ToastType, message: string, duration: number): string {
   const id: string = createId('toast');
   const item: ToastItem = { id, type, message, duration };
-  items = [...items, item].slice(-MAX_VISIBLE);
+  const next: ToastItem[] = [...items, item];
+  if (next.length > MAX_VISIBLE) {
+    const dropped: ToastItem[] = next.slice(0, next.length - MAX_VISIBLE);
+    for (const old of dropped) {
+      const t = timers.get(old.id);
+      if (t !== undefined) { clearTimeout(t); timers.delete(old.id); }
+    }
+  }
+  items = next.slice(-MAX_VISIBLE);
   emit();
 
   const timer = setTimeout(() => {

@@ -407,8 +407,13 @@ async function speakCloud(text: string, opts: SpeakOptions): Promise<void> {
       if (audioCache.size > MAX_AUDIO_CACHE) {
         const oldest = audioCache.keys().next().value as string | undefined;
         if (oldest) {
-          URL.revokeObjectURL(audioCache.get(oldest) as string);
-          audioCache.delete(oldest);
+          const oldestUrl: string = audioCache.get(oldest) as string;
+          // L10：若该 URL 仍被当前播放中的 Audio 引用，延迟回收，避免播放中断
+          const inUse: boolean = Boolean(currentCloudAudio && currentCloudAudio.src === oldestUrl);
+          if (!inUse) {
+            URL.revokeObjectURL(oldestUrl);
+            audioCache.delete(oldest);
+          }
         }
       }
     }

@@ -334,6 +334,60 @@ export function exportAllAppData(): string {
   );
 }
 
+/** 对单个 apiKey 脱敏：不足 12 位整体替换，否则保留前 6 后 3（与 logger 脱敏口径一致） */
+function maskApiKeyForExport(key: string): string {
+  const trimmed: string = String(key ?? '').trim();
+  if (trimmed.length < 12) {
+    return '***';
+  }
+  return `${trimmed.slice(0, 6)}***${trimmed.slice(-3)}`;
+}
+
+/** 对 dz.configs 的 JSON 字符串做 apiKey 脱敏（解析失败原样返回） */
+function maskConfigsJson(raw: string): string {
+  try {
+    const arr: unknown = JSON.parse(raw);
+    if (!Array.isArray(arr)) {
+      return raw;
+    }
+    return JSON.stringify(
+      arr.map((c: unknown): unknown =>
+        c !== null && typeof c === 'object'
+          ? { ...(c as Record<string, unknown>), apiKey: maskApiKeyForExport(String((c as { apiKey?: unknown }).apiKey ?? '')) }
+          : c,
+      ),
+    );
+  } catch {
+    return raw;
+  }
+}
+
+/**
+ * 导出脱敏版配置（M-3 修复）：API Key 仅保留前 6 位 + `***` + 后 3 位，
+ * 适合分享 / 调试场景，不会泄露完整密钥。其余字段与 exportAllAppData 一致。
+ */
+export function exportAllAppDataMasked(): string {
+  const data: Record<string, string> = {};
+  for (const key of EXPORT_KEYS) {
+    const raw: string | null = readRaw(key);
+    if (raw === null) {
+      continue;
+    }
+    data[key] = key === STORAGE_KEYS.CONFIGS ? maskConfigsJson(raw) : raw;
+  }
+  return JSON.stringify(
+    {
+      app: EXPORT_APP,
+      exportVersion: EXPORT_VERSION,
+      exportedAt: new Date().toISOString(),
+      data,
+      masked: true,
+    },
+    null,
+    2,
+  );
+}
+
 /**
  * 导入持久化数据（exportAllAppData 的产物）。
  * 校验通过后写回 localStorage；调用方随后应刷新页面使各 store 重新加载。

@@ -35,6 +35,15 @@ export interface ActionBarProps {
   className?: string;
 }
 
+/** 快捷键提示角标（建议清单 #12）。 */
+function KbdHint({ children }: { children: string }): JSX.Element {
+  return (
+    <kbd className="ml-1.5 hidden rounded border border-white/25 bg-black/25 px-1 py-px font-sans text-[10px] font-medium leading-tight text-white/60 md:inline-block">
+      {children}
+    </kbd>
+  );
+}
+
 /** 底部操作条。 */
 export const ActionBar = memo(function ActionBar({
   hasSelection,
@@ -63,6 +72,7 @@ export const ActionBar = memo(function ActionBar({
             {selectedCount} 张
           </span>
         ) : null}
+        <KbdHint>Enter</KbdHint>
       </Button>
       <Button
         variant="primary"
@@ -76,12 +86,15 @@ export const ActionBar = memo(function ActionBar({
         }
       >
         提示
+        <KbdHint>H</KbdHint>
       </Button>
       <Button variant="secondary" size="lg" disabled={!enabled || isFreeTurn} onClick={onPass}>
         过牌
+        <KbdHint>Space</KbdHint>
       </Button>
       <Button variant="ghost" size="lg" disabled={!enabled || !hasSelection} onClick={onClear}>
         重选
+        <KbdHint>Esc</KbdHint>
       </Button>
     </div>
   );

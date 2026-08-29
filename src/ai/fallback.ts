@@ -229,6 +229,8 @@ export function buildFallbackDecision(params: FallbackParams): AIDecision {
  *
  * 与 buildFallbackDecision 的区别仅在于 reason 文案更中性，
  * 因为这不是「降级」，而是「未配置模型的既定行为」。
+ * 注：运行时无调用方（L-4 报告为死代码），但 tests/ai/fallback.test.ts 有专项覆盖，
+ * 保留作行为契约，不删除。
  */
 export function buildLocalDecision(params: FallbackParams): AIDecision {
   return buildFallbackDecision(params);

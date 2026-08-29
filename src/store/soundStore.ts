@@ -108,27 +108,28 @@ export const useSoundStore = create<SoundStoreState>((set, get) => {
     },
 
     setEnabled: (value: boolean): void => {
-      const s: SoundSettings = { ...get(), enabled: value };
+      // L-9：先更新内存态，再持久化/推送，避免 pushToService 异常导致内存与存储不一致
+      set({ enabled: value });
+      const s: SoundSettings = { ...get() };
       persist(s);
       pushToService(s);
-      set({ enabled: value });
       // 开启声音即视为一次用户意图，顺手解锁（若尚未解锁）
       if (value) unlockSound();
     },
 
     setBgEnabled: (value: boolean): void => {
-      const s: SoundSettings = { ...get(), bgEnabled: value };
+      set({ bgEnabled: value });
+      const s: SoundSettings = { ...get() };
       persist(s);
       pushToService(s);
-      set({ bgEnabled: value });
     },
 
     setVolume: (value: number): void => {
       const vol: number = clampVolume(value, DEFAULT_SOUND.volume);
-      const s: SoundSettings = { ...get(), volume: vol };
+      set({ volume: vol });
+      const s: SoundSettings = { ...get() };
       persist(s);
       pushToService(s);
-      set({ volume: vol });
     },
 
     unlock: (): void => {
@@ -136,18 +137,19 @@ export const useSoundStore = create<SoundStoreState>((set, get) => {
     },
 
     setTtsEnabled: (value: boolean): void => {
-      const s: SoundSettings = { ...get(), ttsEnabled: value };
+      set({ ttsEnabled: value });
+      const s: SoundSettings = { ...get() };
       persist(s);
       pushToService(s);
-      set({ ttsEnabled: value });
       // 开启 TTS 视为一次用户意图，顺手预热语音列表（若尚未预热）
       if (value) unlockSound();
     },
 
     reset: (): void => {
-      persist(DEFAULT_SOUND);
-      pushToService(DEFAULT_SOUND);
       set({ ...DEFAULT_SOUND });
+      const s: SoundSettings = { ...get() };
+      persist(s);
+      pushToService(s);
     },
   };
 });

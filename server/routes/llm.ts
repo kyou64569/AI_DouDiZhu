@@ -19,9 +19,15 @@ import {
   type TestConnectionResponse,
 } from '../types.js';
 import { chatCompletion, fetchModels, testConnection } from '../services/llmProxy.js';
+import { rateLimit } from '../services/httpUtils.js';
 import { logger, maskApiKey } from '../utils/logger.js';
 
 const router: Router = Router();
+
+// 轻量内存速率限制（共享实现见 services/httpUtils.ts）：按 IP 限流，防局域网滥用
+const chatLimiter = rateLimit(30, 60_000);
+const modelsLimiter = rateLimit(20, 60_000);
+const testLimiter = rateLimit(20, 60_000);
 
 /** 构造成功响应信封 */
 function ok<T>(data: T): ApiResponse<T> {
@@ -60,17 +66,25 @@ function requireBaseFields(body: unknown): { baseUrl: string; apiKey: string } {
  * 校验 chat 专有字段。
  * @throws ProxyError
  */
-function requireChatFields(body: unknown): { model: string; messages: ChatMessage[]; temperature?: number; timeoutMs?: number } {
+function requireChatFields(body: unknown): {
+  model: string;
+  messages: ChatMessage[];
+  temperature?: number;
+  timeoutMs?: number;
+  thinking?: boolean;
+  reasoningEffort?: 'low' | 'medium' | 'high';
+} {
   const obj = body as Record<string, unknown>;
 
   const model: string = typeof obj.model === 'string' ? obj.model.trim() : '';
-  if (model.length === 0) {
-    throw new ProxyError(ErrorCode.MISSING_MODEL, '缺少 model');
+  if (model.length === 0 || model.length > 128) {
+    throw new ProxyError(ErrorCode.MISSING_MODEL, 'model 不能为空且长度不超过 128');
   }
 
   const rawMessages: unknown = obj.messages;
-  if (!Array.isArray(rawMessages) || rawMessages.length === 0) {
-    throw new ProxyError(ErrorCode.INVALID_MESSAGES, 'messages 必须是非空数组');
+  const MAX_MESSAGES: number = 50;
+  if (!Array.isArray(rawMessages) || rawMessages.length === 0 || rawMessages.length > MAX_MESSAGES) {
+    throw new ProxyError(ErrorCode.INVALID_MESSAGES, `messages 必须是 1~${MAX_MESSAGES} 个元素的数组`);
   }
 
   const messages: ChatMessage[] = [];
@@ -115,14 +129,14 @@ function sendError(res: Response, module: string, err: unknown): void {
   }
   const detail: string = err instanceof Error ? err.message : String(err);
   logger.error(module, '未知异常', { msg: detail });
-  res.status(200).json(fail(ErrorCode.UNKNOWN, `服务内部错误：${detail}`));
+  res.status(500).json(fail(ErrorCode.UNKNOWN, '服务内部错误，请稍后重试'));
 }
 
 /**
  * POST /api/llm/models
  * 拉取上游模型列表。
  */
-router.post('/models', async (req: Request, res: Response): Promise<void> => {
+router.post('/models', modelsLimiter, async (req: Request, res: Response): Promise<void> => {
   const module = 'llm/models';
   try {
     const base = requireBaseFields(req.body);
@@ -139,7 +153,7 @@ router.post('/models', async (req: Request, res: Response): Promise<void> => {
  * 连通性探活，返回 `{ success, latencyMs }`。
  * 上游不可达时返回结构化错误（code 非 0），不抛出到进程层。
  */
-router.post('/test', async (req: Request, res: Response): Promise<void> => {
+router.post('/test', testLimiter, async (req: Request, res: Response): Promise<void> => {
   const module = 'llm/test';
   try {
     const base = requireBaseFields(req.body);
@@ -155,7 +169,7 @@ router.post('/test', async (req: Request, res: Response): Promise<void> => {
  * POST /api/llm/chat
  * 对话补全透传。
  */
-router.post('/chat', async (req: Request, res: Response): Promise<void> => {
+router.post('/chat', chatLimiter, async (req: Request, res: Response): Promise<void> => {
   const module = 'llm/chat';
   try {
     const base = requireBaseFields(req.body);

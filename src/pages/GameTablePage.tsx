@@ -122,16 +122,12 @@ export function GameTablePage(): JSX.Element {
     autoPassEnabled,
   } = game;
 
-  // 进入页面即尝试开局（仅在 IDLE 且房间存在时）
+  // 进入页面即尝试开局（仅在 IDLE 且房间存在时） P2：用 room.id 稳定引用，避免对象引用抖动重复开局
   useEffect(() => {
-    if (room && phase === GamePhase.IDLE) {
+    if (room?.id && phase === GamePhase.IDLE) {
       useGameStore.getState().startGame();
     }
-    // 仅依赖 [room] 是有意为之：开局只在「房间就绪且仍为 IDLE」时触发一次，
-    // 不能把 phase 纳入依赖——否则 phase 每次变化都会重跑本 effect、反复调用 startGame，
-    // 造成重复开局/状态错乱。故显式禁用 exhaustive-deps 并保留最小依赖。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [room]);
+  }, [room?.id, phase]);
 
   // 人类倒计时（仅人类回合、出牌阶段生效）
   const isHumanTurn: boolean = phase === GamePhase.PLAYING && humanSeat !== null && currentSeat === humanSeat;
@@ -139,15 +135,18 @@ export function GameTablePage(): JSX.Element {
     seconds: HUMAN_TURN_SECONDS,
     active: isHumanTurn,
     resetKey: `${currentSeat}-${game.turn}`,
-    onTimeout: () => useGameStore.getState().autoTimeout(),
+    onTimeout: () => {
+      const st = useGameStore.getState();
+      if (st.phase === GamePhase.PLAYING) st.autoTimeout();
+    },
   });
 
   // M7：AI 回合展示倒计时（观战/人机模式可视化 AI 8s 硬超时）。
   // 纯展示：AI 决策的真实超时由 store/LLM 层控制，此处不触发任何动作。
+  // 观战模式 humanSeat === null，此时所有座位均为 AI，任意回合均视为 AI 回合
   const isAiTurn: boolean =
     (phase === GamePhase.BIDDING || phase === GamePhase.PLAYING) &&
-    humanSeat !== null &&
-    currentSeat !== humanSeat;
+    (humanSeat === null || currentSeat !== humanSeat);
   const aiCountdown = useCountdown({
     seconds: AI_TURN_SECONDS,
     active: isAiTurn,
@@ -162,17 +161,16 @@ export function GameTablePage(): JSX.Element {
     return null;
   };
 
-  // 人类出牌慢时，AI 对手催促一次（剩余 8s 触发，去重）
+  // 人类出牌慢时，AI 对手催促一次（剩余 ≤8s 触发，防单帧跳过；去重由 store 保障）
   useEffect(() => {
-    if (isHumanTurn && countdown.remaining === 8) {
+    if (isHumanTurn && countdown.remaining <= 8 && countdown.remaining > 0) {
       useGameStore.getState().urgeHuman();
     }
   }, [isHumanTurn, countdown.remaining]);
 
   // 自动过牌：勾选开启 + 人类出牌回合 + 非自由回合 + 无牌可压 → 立即过牌。
   // 无需 AI 思考、无需等 30s 倒计时；pass 内置固定过牌音效（playSfx('pass')）+ 语音。
-  // 依赖含 lastPlay/humanHand，勾选或局面变化时即时生效；pass 成功后 currentSeat 流转，
-  // isHumanTurn 变 false，天然防重入。
+  // P3 收窄依赖：仅监听手牌数量而非整个 players 数组，避免 AI 每次出牌后无谓重检
   useEffect(() => {
     if (!autoPassEnabled || !isHumanTurn) return;
     if (isFreeTurn) return; // 自由回合不存在「要不起」
@@ -192,7 +190,8 @@ export function GameTablePage(): JSX.Element {
   // 双保险 —— 仅依赖 [phase, currentSeat] 时，若某次行动只改变了回合数 / 叫分数
   // （例如 store 侧兜底纠正后仍是同一座位继续），effect 不会重跑、定时器不再重挂，
   // 会退化成死锁。把完整游标纳入依赖可确保每次推进都重新调度。
-  const progressKey: string = `${phase}|${currentSeat}|${game.bidHistory.length}|${game.playHistory.length}|${game.redealCount}|${game.turn}`;
+  // H1：包含 gameId，跨局重开即使其他字段巧合相同也能触发重调度
+  const progressKey: string = `${game.gameId}|${phase}|${currentSeat}|${game.bidHistory.length}|${game.playHistory.length}|${game.redealCount}|${game.turn}`;
 
   useEffect(() => {
     // 仅在需要 AI 行动时挂定时器；人类回合 / 结算 / 闲置不挂
@@ -288,6 +287,70 @@ export function GameTablePage(): JSX.Element {
   const toggleSpectateShowAll = useCallback(() => {
     setSpectateShowAll((prev: boolean): boolean => !prev);
   }, []);
+
+  // ===== 键盘快捷键（建议清单 #12）=====
+  // Space=过牌 / Enter=出牌 / H=提示 / 1·2·3=叫分 / Esc=取消选牌。
+  // 仅人类回合或人类叫分回合生效；输入控件、可点按钮聚焦时不劫持按键；
+  // 结算阶段（弹窗打开）不响应，避免误触。
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent): void => {
+      const target = e.target as HTMLElement | null;
+      const tag: string = target?.tagName ?? '';
+      const onEditable: boolean =
+        tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || Boolean(target?.isContentEditable);
+      if (onEditable) return;
+      // 按钮聚焦时 Space/Enter 会原生触发点击，跳过避免双重行动
+      const onActivatable: boolean = tag === 'BUTTON' || tag === 'A';
+      if (phase === GamePhase.SETTLED) return;
+
+      const st = useGameStore.getState();
+
+      switch (e.key) {
+        case ' ':
+        case 'Spacebar': {
+          if (onActivatable) return;
+          if (!isHumanTurn || isFreeTurn) return;
+          e.preventDefault();
+          st.passSelected();
+          break;
+        }
+        case 'Enter': {
+          if (onActivatable) return;
+          if (!isHumanTurn || selectedCardIds.length === 0) return;
+          e.preventDefault();
+          st.playSelected();
+          break;
+        }
+        case 'h':
+        case 'H': {
+          if (!isHumanTurn) return;
+          e.preventDefault();
+          st.applyHint();
+          break;
+        }
+        case '1':
+        case '2':
+        case '3': {
+          if (!(phase === GamePhase.BIDDING && currentSeat === humanSeat && humanSeat !== null)) return;
+          const score = Number(e.key) as BidScore;
+          if (score <= highestBid) return; // 引擎要求叫分必须高于当前最高分
+          e.preventDefault();
+          st.humanBid(score);
+          break;
+        }
+        case 'Escape': {
+          if (selectedCardIds.length === 0) return;
+          e.preventDefault();
+          st.clearSelection();
+          break;
+        }
+        default:
+          break;
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [phase, isHumanTurn, isFreeTurn, currentSeat, humanSeat, highestBid, selectedCardIds]);
 
   // 房间为空：引导回房间页，避免白屏（深色沉浸版）
   if (!room) {

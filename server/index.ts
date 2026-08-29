@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 import llmRouter from './routes/llm.js';
 import ttsRouter from './routes/tts.js';
 import { ErrorCode, type ApiResponse } from './types.js';
+import { isPrivateUpstreamAllowed } from './services/httpUtils.js';
 import { logger } from './utils/logger.js';
 
 const __filename: string = fileURLToPath(import.meta.url);
@@ -70,8 +71,53 @@ const app: Express = express();
 
 // ---------- 中间件 ----------
 
-// 开发期放行 5173 来源；生产同源实际不需要，保留便于本机多端口调试
-app.use(cors());
+// P1 CORS：本地单机工具默认仅允许同源/localhost，生产更严格；通过 ALLOWED_ORIGINS 环境变量可扩展
+const ALLOWED_ORIGINS: string[] = (process.env.ALLOWED_ORIGINS ?? '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter((s) => s.length > 0);
+if (ALLOWED_ORIGINS.length === 0) {
+  ALLOWED_ORIGINS.push(
+    'http://localhost:5173',
+    'http://localhost:5174',
+    'http://localhost:5175',
+    'http://localhost:8787',
+    'http://127.0.0.1:5173',
+    'http://127.0.0.1:5174',
+    'http://127.0.0.1:8787',
+  );
+}
+app.use(
+  cors({
+    origin: (origin, callback): void => {
+      // 同源请求（无 origin，如 curl、同源 fetch）一律放行；否则检查白名单
+      if (!origin) {
+        callback(null, true);
+        return;
+      }
+      const allowed: boolean = ALLOWED_ORIGINS.includes(origin);
+      if (allowed || !IS_PRODUCTION) {
+        // 本地单机场景：未命中白名单也放行但记录 warn，便于局域网调试不中断；公网部署时应收紧为拒绝
+        if (!allowed) {
+          logger.warn(MODULE, `CORS：来源 ${origin} 不在白名单，已按非生产模式放行`);
+        }
+        callback(null, true);
+      } else {
+        callback(new Error('Not allowed by CORS'));
+      }
+    },
+    credentials: false,
+  }),
+);
+
+// P2 安全头（轻量 helmet 替代，无需新增依赖）
+app.use((_req: Request, res: Response, next: NextFunction): void => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('X-XSS-Protection', '0');
+  next();
+});
 
 // LLM 提示词可能较长，放宽 body 上限
 app.use(express.json({ limit: '4mb' }));
@@ -134,6 +180,7 @@ if (IS_PRODUCTION) {
 }
 
 // ---------- 全局错误兜底 ----------
+ // P2 不向客户端泄露内部 detail，detail 仅写入日志
 
 app.use((err: unknown, _req: Request, res: Response, _next: NextFunction): void => {
   const detail: string = err instanceof Error ? err.message : String(err);
@@ -141,20 +188,41 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction): void 
   const body: ApiResponse<null> = {
     code: ErrorCode.UNKNOWN,
     data: null,
-    message: `服务内部错误：${detail}`,
+    message: '服务内部错误，请稍后重试',
   };
   res.status(500).json(body);
 });
 
-// 进程级兜底：绝不因单次异步异常整体退出
+// 进程级兜底：unhandledRejection 仅日志；uncaughtException 日志后延迟退出由进程管理器重启（P3）
 process.on('unhandledRejection', (reason: unknown): void => {
   const detail: string = reason instanceof Error ? reason.message : String(reason);
   logger.error(MODULE, '未处理的 Promise 拒绝', { msg: detail });
 });
 
 process.on('uncaughtException', (err: Error): void => {
-  logger.error(MODULE, '未捕获的异常', { msg: err.message });
+  logger.error(MODULE, '未捕获的异常', { msg: err.message, stack: err.stack });
+  setTimeout(() => process.exit(1), 1000);
 });
+
+// P3 优雅关闭：等待在途请求完成（10s 超时强制退出），并清理 .apiport
+let httpServer: ReturnType<typeof app.listen> | null = null;
+function gracefulShutdown(signal: string): void {
+  logger.info(MODULE, `收到 ${signal}，开始优雅关闭...`);
+  if (httpServer) {
+    httpServer.close(() => {
+      if (!IS_PRODUCTION) {
+        try { fs.unlinkSync(API_PORT_FILE); } catch { /* ignore */ }
+      }
+      logger.info(MODULE, '服务已关闭');
+      process.exit(0);
+    });
+    setTimeout(() => process.exit(1), 10000);
+  } else {
+    process.exit(0);
+  }
+}
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 // ---------- 启动 ----------
 
@@ -168,6 +236,7 @@ function startServer(initialPort: number): void {
 
   const tryBind = (): void => {
     const server = app.listen(currentPort, (): void => {
+      httpServer = server;
       // 成功绑定后才写入 .apiport，避免 TOCTOU 问题
       syncPortFile(currentPort);
       logger.info(MODULE, 'Node 代理已启动', {
@@ -175,6 +244,9 @@ function startServer(initialPort: number): void {
         mode: IS_PRODUCTION ? 'production' : 'development',
         url: `http://localhost:${currentPort}`,
       });
+      if (isPrivateUpstreamAllowed()) {
+        logger.warn(MODULE, 'ALLOW_PRIVATE_UPSTREAM 已开启：允许 baseUrl 指向内网/私有地址（含局域网模型），请确认当前网络环境可信');
+      }
       if (!IS_PRODUCTION) {
         logger.info(MODULE, '开发模式：前端请访问 Vite 服务', { url: 'http://localhost:5173' });
       }

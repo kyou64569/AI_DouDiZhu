@@ -15,8 +15,17 @@ import Select, { type SelectOption } from '@/components/common/Select';
 import { Link } from 'react-router-dom';
 import { ROUTES } from '@/routes';
 import { formatDateTime } from '@/utils/format';
-import type { AIPlayer, ModelConfig, Persona } from '@/types/config';
-import { VOICE_SUGGESTION_LIST, VOICE_LABELS, PERSONAS, PERSONA_LABELS } from '@/types/config';
+import type { AIPlayer, Difficulty, ModelConfig, Persona, Personality } from '@/types/config';
+import {
+  VOICE_SUGGESTION_LIST,
+  VOICE_LABELS,
+  PERSONAS,
+  PERSONA_LABELS,
+  DIFFICULTIES,
+  DIFFICULTY_LABELS,
+  PERSONALITIES,
+  PERSONALITY_LABELS,
+} from '@/types/config';
 import { useConfigStore } from '@/store/configStore';
 import {
   EMPTY_PLAYER_INPUT,
@@ -100,6 +109,24 @@ export function AIPlayerPage(): JSX.Element {
     return [auto, ...rest];
   }, []);
 
+  /** 难度下拉选项（空值 = 跟随默认「普通」） */
+  const difficultyOptions: SelectOption[] = useMemo((): SelectOption[] => {
+    const auto: SelectOption = { value: '', label: '跟随默认（普通）' };
+    const rest: SelectOption[] = (DIFFICULTIES as readonly Difficulty[]).map(
+      (d: Difficulty): SelectOption => ({ value: d, label: DIFFICULTY_LABELS[d] }),
+    );
+    return [auto, ...rest];
+  }, []);
+
+  /** 性格下拉选项（空值 = 跟随默认「均衡」） */
+  const personalityOptions: SelectOption[] = useMemo((): SelectOption[] => {
+    const auto: SelectOption = { value: '', label: '跟随默认（均衡）' };
+    const rest: SelectOption[] = (PERSONALITIES as readonly Personality[]).map(
+      (p: Personality): SelectOption => ({ value: p, label: PERSONALITY_LABELS[p] }),
+    );
+    return [auto, ...rest];
+  }, []);
+
   /** TTS 服务商下拉选项（空值 = 跟随聊天配置） */
   const ttsConfigOptions: SelectOption[] = useMemo((): SelectOption[] => {
     const auto: SelectOption = { value: '', label: '跟随聊天配置（默认）' };
@@ -136,6 +163,8 @@ export function AIPlayerPage(): JSX.Element {
       ttsModel: player.ttsModel ?? '',
       ttsConfigId: player.ttsConfigId ?? '',
       persona: player.persona ?? '',
+      difficulty: player.difficulty ?? '',
+      personality: player.personality ?? '',
     });
     setFormError('');
     setFormOpen(true);
@@ -257,6 +286,16 @@ export function AIPlayerPage(): JSX.Element {
                           {player.remark}
                         </span>
                       ) : null}
+                      {player.difficulty !== undefined ? (
+                        <span className="rounded bg-sky-500/15 px-1.5 py-0.5 text-xs text-sky-300 ring-1 ring-sky-400/30">
+                          {DIFFICULTY_LABELS[player.difficulty]}
+                        </span>
+                      ) : null}
+                      {player.personality !== undefined ? (
+                        <span className="rounded bg-violet-500/15 px-1.5 py-0.5 text-xs text-violet-300 ring-1 ring-violet-400/30">
+                          {PERSONALITY_LABELS[player.personality]}
+                        </span>
+                      ) : null}
                       {inUse ? (
                         <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-xs text-emerald-300 ring-1 ring-emerald-400/30">
                           房间座位中
@@ -376,6 +415,28 @@ export function AIPlayerPage(): JSX.Element {
                   {emoji}
                 </button>
               ))}
+            </div>
+          </div>
+
+          <div className="mt-1 rounded-xl border border-white/10 bg-white/[0.02] p-3">
+            <p className="mb-3 text-xs font-medium uppercase tracking-wide text-slate-400">决策风格（AI 智能）</p>
+            <div className="flex flex-col gap-3">
+              <Select
+                label="决策难度"
+                options={difficultyOptions}
+                value={draft.difficulty ?? ''}
+                placeholder="跟随默认"
+                onChange={(e) => patchDraft({ difficulty: e.target.value })}
+                hint="简单=高随机性、无记牌器；普通=默认策略；困难=低温度+记牌器+战术压制；大师=few-shot 示范+深度思考"
+              />
+              <Select
+                label="决策性格"
+                options={personalityOptions}
+                value={draft.personality ?? ''}
+                placeholder="跟随默认"
+                onChange={(e) => patchDraft({ personality: e.target.value })}
+                hint="激进=敢叫分敢压牌；保守=惜牌多过；均衡=按牌力理性决策"
+              />
             </div>
           </div>
 

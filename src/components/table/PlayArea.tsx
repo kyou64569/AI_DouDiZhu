@@ -7,10 +7,12 @@
  * 视觉重构：
  *  - 椭圆舞台式大圆角面板 + 中心光斑，聚焦视线；
  *  - 出牌出现时逐张交错弹入（CardGroup animate）；
- *  - 空态：自由轮金色提示 / 等待轮翠绿脉冲点。
+ *  - 空态：自由轮金色提示 / 等待轮翠绿脉冲点；
+ *  - 炸弹 / 王炸：舞台震动 + 冲击波光圈 + 「炸弹！/王炸！」横幅（建议清单 #10）。
  */
 
 import { memo } from 'react';
+import { CardType } from '@/types/card';
 import type { PlayRecord } from '@/types/game';
 import { CardGroup } from '@/components/card/CardGroup';
 import { cn } from '@/utils/cn';
@@ -30,6 +32,13 @@ export const PlayArea = memo(function PlayArea({
   isFreeTurn,
   className,
 }: PlayAreaProps): JSX.Element {
+  const patternType: CardType | null = lastPlay?.pattern?.type ?? null;
+  const isBomb: boolean = patternType === CardType.BOMB;
+  const isRocket: boolean = patternType === CardType.ROCKET;
+  const isExplosive: boolean = isBomb || isRocket;
+  // 逐手唯一键：换一手牌时重挂载特效节点，保证震动/光圈每次都重新播放
+  const effectKey: string = lastPlay ? `${lastPlay.turn}-${lastPlay.seat}` : 'none';
+
   return (
     <div
       className={cn(
@@ -49,9 +58,31 @@ export const PlayArea = memo(function PlayArea({
           <span className="relative text-[11px] font-medium tracking-[0.3em] text-white/45">
             场上出牌
           </span>
-          <div className="relative">
+          <div className={cn('relative', isExplosive && 'animate-bomb-shake')} key={effectKey}>
             <CardGroup cards={lastPlay.cards} size="md" animate />
+            {/* 炸弹 / 王炸冲击波光圈 */}
+            {isExplosive ? (
+              <span
+                className="pointer-events-none absolute left-1/2 top-1/2 h-40 w-64 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-gold-300/70 bg-[radial-gradient(ellipse_at_center,rgba(251,191,36,0.35),transparent_65%)] animate-bomb-flash"
+                aria-hidden="true"
+              />
+            ) : null}
           </div>
+          {isExplosive ? (
+            <span
+              key={`banner-${effectKey}`}
+              className={cn(
+                'relative animate-bomb-banner rounded-full px-4 py-1 text-base font-black tracking-widest shadow-glowGold',
+                isRocket
+                  ? 'bg-gradient-to-r from-rose-500 to-red-600 text-white'
+                  : 'bg-gradient-to-r from-gold-400 to-orange-500 text-gold-950',
+              )}
+              role="status"
+              aria-label={isRocket ? '王炸' : '炸弹'}
+            >
+              💥 {isRocket ? '王炸！' : '炸弹！'}
+            </span>
+          ) : null}
         </>
       ) : (
         <div className="relative flex flex-col items-center gap-3 text-center">

@@ -29,9 +29,11 @@ export interface BiddingResult {
   records: BidRecord[];
 }
 
-/** 把任意数字安全收敛为 SeatIndex。 */
+/** 把任意数字安全收敛为 SeatIndex。P1 防御：NaN/Infinity/非有限数一律回落 0 */
 export function toSeatIndex(value: number): SeatIndex {
+  if (!Number.isFinite(value)) return 0 as SeatIndex;
   const normalized: number = ((Math.trunc(value) % PLAYER_COUNT) + PLAYER_COUNT) % PLAYER_COUNT;
+  // NaN 经 finite 检查已排除，此处必为 0/1/2
   return normalized as SeatIndex;
 }
 

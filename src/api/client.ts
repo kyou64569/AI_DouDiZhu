@@ -235,6 +235,25 @@ export async function getJson<TResponse>(path: string, options: RequestOptions =
     controller.abort();
   }, timeoutMs);
 
+  // 外部信号联动（L：此前 getJson 未接线外部 signal，导致取消失效）
+  const onExternalAbort = (): void => {
+    controller.abort();
+  };
+  if (options.signal) {
+    if (options.signal.aborted) {
+      controller.abort();
+    } else {
+      options.signal.addEventListener('abort', onExternalAbort, { once: true });
+    }
+  }
+
+  const toAbortApiError = (): ApiError => {
+    if (options.signal?.aborted) {
+      return new ApiError(ApiErrorCode.CLIENT_ABORTED, '请求已取消');
+    }
+    return new ApiError(ApiErrorCode.NETWORK_TIMEOUT, `请求超时（${timeoutMs}ms）`);
+  };
+
   // 整个流程（fetch + 响应体读取）都在超时保护内，clearTimeout 放到最后统一执行
   try {
     let response: Response;
@@ -246,7 +265,7 @@ export async function getJson<TResponse>(path: string, options: RequestOptions =
       });
     } catch (err: unknown) {
       if (isAbortLikeError(err, controller.signal)) {
-        throw new ApiError(ApiErrorCode.NETWORK_TIMEOUT, `请求超时（${timeoutMs}ms）`);
+        throw toAbortApiError();
       }
       const detail: string = err instanceof Error ? err.message : String(err);
       throw new ApiError(ApiErrorCode.NETWORK_UNREACHABLE, `网络请求失败：${detail}`);
@@ -261,7 +280,7 @@ export async function getJson<TResponse>(path: string, options: RequestOptions =
       } catch (err: unknown) {
         // 读 body 时被超时打断 → 与 fetch 阶段超时归一化为同一类错误
         if (isAbortLikeError(err, controller.signal)) {
-          throw new ApiError(ApiErrorCode.NETWORK_TIMEOUT, `请求超时（${timeoutMs}ms）`);
+          throw toAbortApiError();
         }
         text = '';
       }
@@ -278,7 +297,7 @@ export async function getJson<TResponse>(path: string, options: RequestOptions =
     } catch (err: unknown) {
       // body 读取被超时打断 → 与 fetch 阶段超时归一化为同一类错误
       if (isAbortLikeError(err, controller.signal)) {
-        throw new ApiError(ApiErrorCode.NETWORK_TIMEOUT, `请求超时（${timeoutMs}ms）`);
+        throw toAbortApiError();
       }
       throw new ApiError(ApiErrorCode.UNKNOWN, '服务返回的不是合法 JSON', response.status);
     }
@@ -290,6 +309,9 @@ export async function getJson<TResponse>(path: string, options: RequestOptions =
     return envelope.data;
   } finally {
     clearTimeout(timer);
+    if (options.signal) {
+      options.signal.removeEventListener('abort', onExternalAbort);
+    }
   }
 }
 

@@ -23,6 +23,43 @@ export const DEFAULT_THINKING_MODE: ThinkingMode = 'auto';
 /** 出厂默认采样温度（斗地主是确定性博弈，偏低更稳） */
 export const DEFAULT_TEMPERATURE = 0.3;
 
+// ---- AI 决策难度（建议清单 #1）----
+
+/** AI 决策难度：easy=简单（高温度、无记牌器）；normal=普通（默认）；hard=困难（低温度+记牌器+战术）；master=大师（few-shot+深度思考） */
+export type Difficulty = 'easy' | 'normal' | 'hard' | 'master';
+
+/** 全部难度（用于 UI 渲染） */
+export const DIFFICULTIES: Difficulty[] = ['easy', 'normal', 'hard', 'master'];
+
+/** 难度中文标签 */
+export const DIFFICULTY_LABELS: Record<Difficulty, string> = {
+  easy: '简单',
+  normal: '普通',
+  hard: '困难',
+  master: '大师',
+};
+
+/** 出厂默认难度 */
+export const DEFAULT_DIFFICULTY: Difficulty = 'normal';
+
+// ---- AI 决策性格（建议清单 #2）----
+
+/** AI 决策性格：aggressive=激进（抢分压牌）；conservative=保守（惜牌多过）；balanced=均衡（默认） */
+export type Personality = 'aggressive' | 'conservative' | 'balanced';
+
+/** 全部性格（用于 UI 渲染） */
+export const PERSONALITIES: Personality[] = ['aggressive', 'balanced', 'conservative'];
+
+/** 性格中文标签 */
+export const PERSONALITY_LABELS: Record<Personality, string> = {
+  aggressive: '激进',
+  balanced: '均衡',
+  conservative: '保守',
+};
+
+/** 出厂默认性格 */
+export const DEFAULT_PERSONALITY: Personality = 'balanced';
+
 // ---- 语音 / 人设（TTS 台词，REQ-趣味）----
 
 /** AI 台词人设 */
@@ -124,6 +161,10 @@ export interface AIPlayer {
   ttsConfigId?: string;
   /** 台词人设（毒舌/稳重/话痨/萌新） */
   persona?: Persona;
+  /** 决策难度（简单/普通/困难/大师），影响采样温度、提示词信息量与思考强度 */
+  difficulty?: Difficulty;
+  /** 决策性格（激进/均衡/保守），注入提示词影响叫分与出牌风格 */
+  personality?: Personality;
   createdAt: number;
   updatedAt: number;
 }

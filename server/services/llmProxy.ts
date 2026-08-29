@@ -19,10 +19,32 @@ import {
   type UpstreamModelsPayload,
 } from '../types.js';
 import { buildThinkingBody, detectProvider } from './thinkingAdapter.js';
+import {
+  describeHttpStatus,
+  extractUpstreamError,
+  fetchWithTimeout,
+  isPrivateHost,
+  isPrivateUpstreamAllowed,
+  mapHttpStatus,
+  readBodyWithTimeout,
+} from './httpUtils.js';
 import { logger, maskApiKey } from '../utils/logger.js';
 
+/** 解析 LLM_TIMEOUT_MS 环境变量；非法（非数字/NaN/≤0）时回落默认并 warn（L-1） */
+function envDefaultTimeoutMs(): number {
+  const raw: string | undefined = process.env.LLM_TIMEOUT_MS;
+  if (raw !== undefined && raw !== '') {
+    const n: number = Number(raw);
+    if (Number.isFinite(n) && n > 0) {
+      return n;
+    }
+    logger.warn('llmProxy', `LLM_TIMEOUT_MS 非法值 "${raw}"，已回落默认 15000ms`);
+  }
+  return 15000;
+}
+
 /** 默认转发超时（毫秒），可被 .env 的 LLM_TIMEOUT_MS 覆盖 */
-const DEFAULT_TIMEOUT_MS: number = Number(process.env.LLM_TIMEOUT_MS ?? 15000);
+const DEFAULT_TIMEOUT_MS: number = envDefaultTimeoutMs();
 
 /** chat 接口默认超时（毫秒），对应 PRD D4 的 AI 决策 8s 硬超时 */
 const DEFAULT_CHAT_TIMEOUT_MS: number = 8000;
@@ -30,10 +52,23 @@ const DEFAULT_CHAT_TIMEOUT_MS: number = 8000;
 /** 连通性探活的超时（毫秒），保持较短以便快速反馈 */
 const TEST_TIMEOUT_MS: number = 10000;
 
-/** 连通性探活允许的最大响应体尺寸提示（仅用于日志，不做截断） */
 const MODULE_MODELS: string = 'llm/models';
 const MODULE_CHAT: string = 'llm/chat';
 const MODULE_TEST: string = 'llm/test';
+
+/** 响应体大小上限（P1 DoS 防护：10MB） */
+const MAX_BODY_SIZE: number = 10 * 1024 * 1024;
+
+/**
+ * 带超时读取响应体并解码为文本（共享 readBodyWithTimeout 的文本封装）。
+ */
+async function readTextWithTimeout(response: Response, timeoutMs: number): Promise<string> {
+  const bytes: Uint8Array = await readBodyWithTimeout(response, timeoutMs, MAX_BODY_SIZE);
+  return new TextDecoder().decode(bytes);
+}
+
+/** LLM 代理的 fetch 选项（错误文案按 LLM 类别生成，DNS rebinding 校验默认开启）。 */
+const LLM_FETCH_OPTS = { kind: 'LLM' } as const;
 
 /**
  * 规范化 baseUrl，容忍用户各种写法。
@@ -78,6 +113,16 @@ export function normalizeBaseUrl(rawBaseUrl: string): string {
     throw new ProxyError(ErrorCode.INVALID_BASE_URL, 'baseUrl 仅支持 http/https 协议');
   }
 
+  // P1 SSRF 防护：拒绝内网/私有地址段与链路本地地址（含云元数据 169.254.169.254）
+  // localhost/127.0.0.1 始终放行（本地 LLM 场景）；其余私有段默认拒绝，
+  // 局域网自建模型可通过服务端环境变量 ALLOW_PRIVATE_UPSTREAM=true 显式放行
+  if (!isPrivateUpstreamAllowed() && isPrivateHost(parsed.hostname)) {
+    throw new ProxyError(
+      ErrorCode.INVALID_BASE_URL,
+      'baseUrl 不允许指向内网/私有地址；如使用局域网自建模型，请在服务端设置环境变量 ALLOW_PRIVATE_UPSTREAM=true',
+    );
+  }
+
   // 清理路径：去掉空段与结尾斜杠
   const segments: string[] = parsed.pathname.split('/').filter((seg) => seg.length > 0);
   const last: string = segments.length > 0 ? segments[segments.length - 1].toLowerCase() : '';
@@ -90,155 +135,6 @@ export function normalizeBaseUrl(rawBaseUrl: string): string {
 
   const path: string = segments.length > 0 ? '/' + segments.join('/') : '';
   return `${parsed.protocol}//${parsed.host}${path}`;
-}
-
-/**
- * 带超时的 fetch。
- * 超时通过 AbortController 实现，超时/网络错误均归一化为 ProxyError。
- *
- * @param url 目标地址
- * @param init fetch 参数
- * @param timeoutMs 超时毫秒
- */
-async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
-  const controller: AbortController = new AbortController();
-  const timer: NodeJS.Timeout = setTimeout(() => {
-    controller.abort();
-  }, Math.max(1000, timeoutMs));
-
-  try {
-    const response: Response = await fetch(url, { ...init, signal: controller.signal });
-    return response;
-  } catch (err: unknown) {
-    const name: string = err instanceof Error ? err.name : '';
-    if (name === 'AbortError' || name === 'TimeoutError') {
-      throw new ProxyError(ErrorCode.NETWORK_TIMEOUT, `请求上游超时（${timeoutMs}ms）`);
-    }
-    const detail: string = err instanceof Error ? err.message : String(err);
-    throw new ProxyError(ErrorCode.NETWORK_UNREACHABLE, `无法连接上游服务：${detail}`);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/**
- * 带超时读取响应体文本（M2）。
- * 响应头到达后 body 流挂死时（上游慢流/挂起），超时中断读取并归一化为 ProxyError，
- * 避免连接与内存被长期占用。读取通过 reader 手动消费，abort 时 cancel 底层流。
- */
-async function readBodyWithTimeout(response: Response, timeoutMs: number): Promise<string> {
-  const controller: AbortController = new AbortController();
-  const timer: NodeJS.Timeout = setTimeout(() => controller.abort(), Math.max(1000, timeoutMs));
-  try {
-    if (response.body === null) {
-      return await response.text();
-    }
-    const reader: ReadableStreamDefaultReader<Uint8Array> = response.body.getReader();
-    const abortHandler = (): void => {
-      reader.cancel().catch(() => {});
-    };
-    controller.signal.addEventListener('abort', abortHandler);
-    try {
-      const chunks: Uint8Array[] = [];
-      for (;;) {
-        const { done, value }: ReadableStreamReadResult<Uint8Array> = await reader.read();
-        if (done) break;
-        chunks.push(value);
-      }
-      const total: number = chunks.reduce((n: number, c: Uint8Array): number => n + c.length, 0);
-      const merged: Uint8Array = new Uint8Array(total);
-      let offset: number = 0;
-      for (const c of chunks) {
-        merged.set(c, offset);
-        offset += c.length;
-      }
-      return new TextDecoder().decode(merged);
-    } finally {
-      controller.signal.removeEventListener('abort', abortHandler);
-      reader.releaseLock();
-    }
-  } catch (err: unknown) {
-    const name: string = err instanceof Error ? err.name : '';
-    if (name === 'AbortError' || controller.signal.aborted) {
-      throw new ProxyError(ErrorCode.NETWORK_TIMEOUT, `读取上游响应体超时（${timeoutMs}ms）`);
-    }
-    throw err;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/**
- * 把上游 HTTP 状态码归一化为内部错误码。
- */
-function mapHttpStatus(status: number): (typeof ErrorCode)[keyof typeof ErrorCode] {
-  if (status === 401 || status === 403) {
-    return ErrorCode.UPSTREAM_AUTH_FAILED;
-  }
-  if (status === 404) {
-    return ErrorCode.UPSTREAM_NOT_FOUND;
-  }
-  if (status === 429) {
-    return ErrorCode.UPSTREAM_RATE_LIMITED;
-  }
-  if (status >= 500) {
-    return ErrorCode.UPSTREAM_SERVER_ERROR;
-  }
-  return ErrorCode.UPSTREAM_BAD_REQUEST;
-}
-
-/** HTTP 状态码对应的中文说明 */
-function describeHttpStatus(status: number): string {
-  if (status === 401 || status === 403) {
-    return 'API Key 认证失败，请检查密钥是否正确、是否有该接口权限';
-  }
-  if (status === 404) {
-    return '上游接口不存在，请检查 baseUrl 是否正确（常见形如 https://api.openai.com/v1）';
-  }
-  if (status === 429) {
-    return '上游服务限流，请稍后重试';
-  }
-  if (status >= 500) {
-    return `上游服务内部错误（HTTP ${status}）`;
-  }
-  return `上游返回错误（HTTP ${status}）`;
-}
-
-/**
- * 读取上游错误响应体并提取安全的错误描述。
- * 只提取 message 文本，绝不回显请求中的 apiKey。
- */
-async function extractUpstreamError(response: Response): Promise<string> {
-  let text: string = '';
-  try {
-    text = await response.text();
-  } catch {
-    text = '';
-  }
-  if (text.length === 0) {
-    return '';
-  }
-
-  // 优先按 JSON 解析取 error.message
-  try {
-    const parsed: unknown = JSON.parse(text);
-    if (parsed !== null && typeof parsed === 'object') {
-      const obj = parsed as Record<string, unknown>;
-      const errField = obj.error;
-      if (errField !== null && typeof errField === 'object') {
-        const msg = (errField as Record<string, unknown>).message;
-        if (typeof msg === 'string' && msg.length > 0) {
-          return msg.slice(0, 300);
-        }
-      }
-      if (typeof obj.message === 'string' && obj.message.length > 0) {
-        return obj.message.slice(0, 300);
-      }
-    }
-  } catch {
-    // 非 JSON，退化为截断纯文本
-  }
-  return text.slice(0, 300);
 }
 
 /**
@@ -274,6 +170,7 @@ export async function fetchModels(req: FetchModelsRequest): Promise<FetchModelsR
     url,
     { method: 'GET', headers: buildHeaders(req.apiKey, false) },
     DEFAULT_TIMEOUT_MS,
+    LLM_FETCH_OPTS,
   );
 
   const latencyMs: number = Date.now() - startedAt;
@@ -294,7 +191,7 @@ export async function fetchModels(req: FetchModelsRequest): Promise<FetchModelsR
 
   let payload: UpstreamModelsPayload;
   try {
-    const raw: string = await readBodyWithTimeout(response, DEFAULT_TIMEOUT_MS);
+    const raw: string = await readTextWithTimeout(response, DEFAULT_TIMEOUT_MS);
     payload = JSON.parse(raw) as UpstreamModelsPayload;
   } catch (err: unknown) {
     if (err instanceof ProxyError) {
@@ -354,6 +251,7 @@ export async function testConnection(req: TestConnectionRequest): Promise<TestCo
     url,
     { method: 'GET', headers: buildHeaders(req.apiKey, false) },
     TEST_TIMEOUT_MS,
+    LLM_FETCH_OPTS,
   );
   const latencyMs: number = Date.now() - startedAt;
 
@@ -373,7 +271,7 @@ export async function testConnection(req: TestConnectionRequest): Promise<TestCo
 
   // 主动释放响应体，避免连接挂起
   try {
-    await readBodyWithTimeout(response, TEST_TIMEOUT_MS);
+    await readTextWithTimeout(response, TEST_TIMEOUT_MS);
   } catch {
     // 探活场景下响应体读取失败不影响结论
   }
@@ -476,6 +374,9 @@ export async function chatCompletion(req: ChatRequest): Promise<ChatResponse> {
     timeout: `${timeoutMs}ms`,
   });
 
+  // P3 合并超时：fetch + body 共享总 deadline，避免 2*timeoutMs 叠加
+  const deadline: number = startedAt + timeoutMs;
+  const fetchTimeout: number = Math.max(1000, deadline - Date.now());
   const response: Response = await fetchWithTimeout(
     url,
     {
@@ -483,7 +384,8 @@ export async function chatCompletion(req: ChatRequest): Promise<ChatResponse> {
       headers: buildHeaders(req.apiKey, true),
       body: JSON.stringify(body),
     },
-    timeoutMs,
+    fetchTimeout,
+    LLM_FETCH_OPTS,
   );
 
   const latencyMs: number = Date.now() - startedAt;
@@ -505,7 +407,8 @@ export async function chatCompletion(req: ChatRequest): Promise<ChatResponse> {
 
   let payload: UpstreamChatPayload;
   try {
-    const raw: string = await readBodyWithTimeout(response, timeoutMs);
+    const readTimeout: number = Math.max(1000, deadline - Date.now());
+    const raw: string = await readTextWithTimeout(response, readTimeout);
     payload = JSON.parse(raw) as UpstreamChatPayload;
   } catch (err: unknown) {
     if (err instanceof ProxyError) {

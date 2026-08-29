@@ -18,12 +18,11 @@ import type { ChatMessage } from '@/types/api';
 import {
   DecisionSource,
   type AIDecision,
-  type AILogSink,
   type AIPlayInput,
   type AIRawResponse,
 } from '@/types/ai';
 import type { ThinkingMode } from '@/types/config';
-import { DEFAULT_TEMPERATURE, DEFAULT_THINKING_MODE } from '@/types/config';
+import { DEFAULT_THINKING_MODE } from '@/types/config';
 import { chatCompletion, AI_TIMEOUT_MS } from '@/api/llm';
 import { toErrorMessage } from '@/api/client';
 import { validatePlay, type ValidationResult } from '@/engine/validator';
@@ -35,30 +34,11 @@ import { parsePlayResponse } from './responseParser';
 import { matchCards, type MatchResult } from './cardMatcher';
 import { buildFallbackDecision, resolveTarget } from './fallback';
 import { resolveThinking } from './thinking';
+import { resolveDifficultyTemperature, resolveDifficultyThinking } from './difficulty';
+import { safeLog } from './safeLog';
 
 /** 日志级别别名。 */
 type Level = 'info' | 'warn' | 'error';
-
-/**
- * 安全触发日志回调：回调自身抛异常也不影响决策主流程。
- */
-function safeLog(
-  onLog: AILogSink | undefined,
-  seat: 0 | 1 | 2,
-  playerName: string,
-  level: Level,
-  message: string,
-  source?: DecisionSource,
-): void {
-  if (onLog === undefined) {
-    return;
-  }
-  try {
-    onLog({ seat, playerName, level, message, source });
-  } catch {
-    // 日志失败绝不影响决策
-  }
-}
 
 /**
  * AI 出牌决策主入口（AIPlayDriver 实现）。
@@ -70,14 +50,18 @@ export async function decidePlay(input: AIPlayInput): Promise<AIDecision> {
   const startedAt: number = Date.now();
 
   // 最外层兜底：任何未预期的异常都不允许逃逸出去
+  // L8：input 本身可能异常（如 hand 非数组），此处二次访问 input.hand 需防御，避免二次抛异常破坏「永不 reject」
   try {
     return await runDecision(input, startedAt);
   } catch (error: unknown) {
     const message: string = toErrorMessage(error);
+    const safeHand: Card[] = Array.isArray((input as AIPlayInput | null | undefined)?.hand) ? (input as AIPlayInput).hand : [];
+    const safeLastPlay = (input as AIPlayInput | null | undefined)?.lastPlay ?? null;
+    const safeIsFreeTurn: boolean = Boolean((input as AIPlayInput | null | undefined)?.isFreeTurn);
     const decision: AIDecision = buildFallbackDecision({
-      hand: input.hand,
-      lastPlay: input.lastPlay,
-      isFreeTurn: input.isFreeTurn,
+      hand: safeHand,
+      lastPlay: safeLastPlay,
+      isFreeTurn: safeIsFreeTurn,
       warnings: [`编排层发生未预期异常：${message}`],
       startedAt,
       now: Date.now(),
@@ -150,27 +134,24 @@ async function runDecision(input: AIPlayInput, startedAt: number): Promise<AIDec
   try {
     const messages: ChatMessage[] = buildPlayMessages(input);
     const thinkingMode: ThinkingMode = binding.thinkingMode ?? DEFAULT_THINKING_MODE;
-    const resolvedThinking = resolveThinking(binding.model, thinkingMode);
-    // M4：推理模型思考耗时远超普通模型，超时随思考开启放大（默认 8s → 32s），
-    // 否则 thinking 模型几乎必然在固定 8s 内 abort，LLM 驱动形同虚设
-    const effectiveTimeoutMs: number = resolvedThinking.thinking
-      ? Math.max(timeoutMs, timeoutMs * 4)
-      : timeoutMs;
+    // 大师难度在用户未显式指定（auto）时升级为 high；显式设置始终优先
+    const effectiveThinkingMode: ThinkingMode = resolveDifficultyThinking(binding.difficulty, thinkingMode);
+    const resolvedThinking = resolveThinking(binding.model, effectiveThinkingMode);
+    // 超时已由 settingsStore.resolveTimeoutMs 按模式+思考态统一计算（人机 8s/思考 30s，观战 20s/思考 60s），此处直接使用
+    const effectiveTimeoutMs: number = timeoutMs;
     const response = await chatCompletion(
       {
         baseUrl: binding.baseUrl,
         apiKey: binding.apiKey,
         model: binding.model,
         messages,
-        temperature:
-          typeof binding.temperature === 'number' && Number.isFinite(binding.temperature)
-            ? binding.temperature
-            : DEFAULT_TEMPERATURE,
+        // 难度覆盖温度：简单调高、困难/大师调低，普通沿用配置温度
+        temperature: resolveDifficultyTemperature(binding.difficulty, binding.temperature),
         thinking: resolvedThinking.thinking,
         reasoningEffort: resolvedThinking.reasoningEffort,
         timeoutMs: effectiveTimeoutMs,
       },
-      { timeoutMs: effectiveTimeoutMs },
+      { timeoutMs: effectiveTimeoutMs, signal: input.signal },
     );
     content = response.content;
   } catch (error: unknown) {

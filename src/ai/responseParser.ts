@@ -117,51 +117,42 @@ function extractJsonBlock(text: string): string | null {
  * 从任意文本中提取最后一个「花括号平衡」的 JSON 片段。
  * 模型常在长推理后把最终结论放在最后，前面的 JSON 可能是草稿或自我纠正，
  * 因此优先取最后一个块更贴近模型真实意图。会正确跳过字符串字面量里的花括号。
+ * P1 修复：原实现取 lastIndexOf('{') 会选中嵌套内层花括号导致截断（如 {"a":{"b":1}} 误取 {"b":1}），
+ * 现改为正向扫描收集全部顶层平衡块后取最后一条。
  */
 function extractLastJsonBlock(text: string): string | null {
-  const start: number = text.lastIndexOf('{');
-  if (start === -1) {
-    return null;
-  }
-
-  let depth = 0;
-  let inString = false;
-  let quoteChar = '';
-  let escaped = false;
-
-  for (let i = start; i < text.length; i += 1) {
-    const ch: string = text[i];
-
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (ch === '\\') {
-      escaped = true;
-      continue;
-    }
-    if (inString) {
-      if (ch === quoteChar) {
-        inString = false;
-      }
-      continue;
-    }
-    if (ch === '"' || ch === "'") {
-      inString = true;
-      quoteChar = ch;
-      continue;
-    }
-    if (ch === '{') {
-      depth += 1;
-    } else if (ch === '}') {
-      depth -= 1;
-      if (depth === 0) {
-        return text.slice(start, i + 1);
+  const blocks: string[] = [];
+  let i = 0;
+  while (i < text.length) {
+    const start: number = text.indexOf('{', i);
+    if (start === -1) break;
+    let depth = 0;
+    let inString = false;
+    let quoteChar = '';
+    let escaped = false;
+    let end = -1;
+    for (let j = start; j < text.length; j += 1) {
+      const ch: string = text[j];
+      if (escaped) { escaped = false; continue; }
+      if (ch === '\\') { escaped = true; continue; }
+      if (inString) { if (ch === quoteChar) inString = false; continue; }
+      if (ch === '"' || ch === "'") { inString = true; quoteChar = ch; continue; }
+      if (ch === '{') depth += 1;
+      else if (ch === '}') {
+        depth -= 1;
+        if (depth === 0) { end = j; break; }
       }
     }
+    if (end !== -1) {
+      blocks.push(text.slice(start, end + 1));
+      i = end + 1;
+    } else {
+      // 该起始花括号未形成平衡块（截断/非法），跳过继续向后寻找，避免 miss 后方合法块
+      i = start + 1;
+    }
   }
-
-  return null;
+  if (blocks.length === 0) return null;
+  return blocks[blocks.length - 1];
 }
 
 /**
