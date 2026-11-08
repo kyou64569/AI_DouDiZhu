@@ -12,8 +12,25 @@
  */
 
 import { create } from 'zustand';
-import type { ConnectionTestResult, ModelConfig, ThinkingMode } from '@/types/config';
-import { DEFAULT_TEMPERATURE, DEFAULT_THINKING_MODE, THINKING_MODES } from '@/types/config';
+import type {
+  ApiFormat,
+  ConnectionTestResult,
+  ModelConfig,
+  ThinkingCapability,
+  ThinkingMode,
+  ThinkingProfile,
+} from '@/types/config';
+import {
+  API_FORMATS,
+  DEFAULT_API_FORMAT,
+  DEFAULT_TEMPERATURE,
+  DEFAULT_THINKING_CAPABILITY,
+  DEFAULT_THINKING_MODE,
+  DEFAULT_THINKING_PROFILE,
+  THINKING_CAPABILITIES,
+  THINKING_MODES,
+  THINKING_PROFILES,
+} from '@/types/config';
 import type { ModelItem } from '@/types/api';
 import { fetchModels as apiFetchModels, testConnection as apiTestConnection } from '@/api/llm';
 import { toErrorMessage } from '@/api/client';
@@ -40,6 +57,8 @@ export interface ModelConfigInput {
   provider: string;
   /** Base URL */
   baseUrl: string;
+  /** API 协议格式（openai / gemini / anthropic） */
+  apiFormat: ApiFormat;
   /** API Key */
   apiKey: string;
   /** 勾选保留的可用模型 id 列表 */
@@ -48,6 +67,12 @@ export interface ModelConfigInput {
   selectedModel: string;
   /** AI 思考模式（推理强度） */
   thinkingMode: ThinkingMode;
+  /** 思考方言（厂商参数形状）选择 */
+  thinkingProfile: ThinkingProfile;
+  /** 模型思考能力声明 */
+  thinkingCapability: ThinkingCapability;
+  /** 输出上限 max_tokens；null=未填写（思考开启时按档位自动抬预算） */
+  maxTokens: number | null;
   /** 采样温度 0~2 */
   temperature: number;
 }
@@ -55,6 +80,8 @@ export interface ModelConfigInput {
 /** 拉取模型 / 连通性测试所需的凭据（不含 id，可来自未保存的草稿） */
 export interface LLMCredentials {
   baseUrl: string;
+  /** API 协议格式（选填，缺省 openai） */
+  apiFormat?: ApiFormat;
   apiKey: string;
 }
 
@@ -75,10 +102,14 @@ export const EMPTY_CONFIG_INPUT: ModelConfigInput = {
   name: '',
   provider: '',
   baseUrl: '',
+  apiFormat: DEFAULT_API_FORMAT,
   apiKey: '',
   availableModels: [],
   selectedModel: '',
   thinkingMode: DEFAULT_THINKING_MODE,
+  thinkingProfile: DEFAULT_THINKING_PROFILE,
+  thinkingCapability: DEFAULT_THINKING_CAPABILITY,
+  maxTokens: null,
   temperature: DEFAULT_TEMPERATURE,
 };
 
@@ -113,10 +144,16 @@ function normalizeConfig(raw: ModelConfig): ModelConfig {
     name: raw.name,
     provider: typeof record.provider === 'string' ? (record.provider as string) : '',
     baseUrl: typeof raw.baseUrl === 'string' ? raw.baseUrl : '',
+    // 协议格式为后加字段：存量数据缺失回落 openai，行为与历史版本一致
+    apiFormat: normalizeApiFormat(record.apiFormat),
     apiKey: typeof record.apiKey === 'string' ? (record.apiKey as string) : '',
     availableModels: toStringArray(record.availableModels),
     selectedModel: typeof record.selectedModel === 'string' ? (record.selectedModel as string) : '',
     thinkingMode: normalizeThinkingMode(record.thinkingMode),
+    // 思考方言/能力为后加字段：存量数据缺失时回落默认（auto / graded），行为与历史版本一致
+    thinkingProfile: normalizeThinkingProfile(record.thinkingProfile),
+    thinkingCapability: normalizeThinkingCapability(record.thinkingCapability),
+    maxTokens: normalizeMaxTokens(record.maxTokens),
     temperature: clampTemperature(record.temperature, DEFAULT_TEMPERATURE),
     createdAt: toFiniteNumber(record.createdAt, now),
     updatedAt: toFiniteNumber(record.updatedAt, now),
@@ -150,6 +187,34 @@ export function normalizeBaseUrl(baseUrl: string): string {
 /** 把任意输入归一化为合法思考模式，无法识别时回落默认档 */
 function normalizeThinkingMode(value: unknown): ThinkingMode {
   return THINKING_MODES.includes(value as ThinkingMode) ? (value as ThinkingMode) : DEFAULT_THINKING_MODE;
+}
+
+/** 把任意输入归一化为合法思考方言，无法识别时回落 auto（存量数据兼容） */
+function normalizeThinkingProfile(value: unknown): ThinkingProfile {
+  return THINKING_PROFILES.includes(value as ThinkingProfile)
+    ? (value as ThinkingProfile)
+    : DEFAULT_THINKING_PROFILE;
+}
+
+/** 把任意输入归一化为合法协议格式，无法识别时回落 openai（存量数据兼容） */
+function normalizeApiFormat(value: unknown): ApiFormat {
+  return API_FORMATS.includes(value as ApiFormat) ? (value as ApiFormat) : DEFAULT_API_FORMAT;
+}
+
+/** 把任意输入归一化为合法思考能力声明，无法识别时回落 graded */
+function normalizeThinkingCapability(value: unknown): ThinkingCapability {
+  return THINKING_CAPABILITIES.includes(value as ThinkingCapability)
+    ? (value as ThinkingCapability)
+    : DEFAULT_THINKING_CAPABILITY;
+}
+
+/**
+ * 把任意输入归一化为合法输出上限：正整数保留，其余（缺失/非整数/≤0）一律 null。
+ * null 表示未填写 → 思考开启时由服务端按档位自动抬预算。
+ */
+function normalizeMaxTokens(value: unknown): number | null {
+  const num: number = toFiniteNumber(value, 0);
+  return Number.isInteger(num) && num >= 1 ? num : null;
 }
 
 /** 把任意输入夹到合法温度区间 [0, 2]，非有限数回落 fallback */
@@ -204,6 +269,27 @@ export function validateConfigInput(input: ModelConfigInput): string | null {
   const thinkingMode: unknown = raw.thinkingMode;
   if (thinkingMode !== undefined && !THINKING_MODES.includes(thinkingMode as ThinkingMode)) {
     return '请选择有效的思考模式';
+  }
+  const thinkingProfile: unknown = raw.thinkingProfile;
+  if (thinkingProfile !== undefined && !THINKING_PROFILES.includes(thinkingProfile as ThinkingProfile)) {
+    return '请选择有效的思考方言';
+  }
+  const thinkingCapability: unknown = raw.thinkingCapability;
+  if (
+    thinkingCapability !== undefined &&
+    !THINKING_CAPABILITIES.includes(thinkingCapability as ThinkingCapability)
+  ) {
+    return '请选择有效的思考能力声明';
+  }
+  const maxTokens: unknown = raw.maxTokens;
+  if (maxTokens !== undefined && maxTokens !== null) {
+    if (typeof maxTokens !== 'number' || !Number.isInteger(maxTokens) || maxTokens < 1) {
+      return '输出上限需为正整数';
+    }
+  }
+  const apiFormat: unknown = raw.apiFormat;
+  if (apiFormat !== undefined && !API_FORMATS.includes(apiFormat as ApiFormat)) {
+    return '请选择有效的 API 协议格式';
   }
   return null;
 }
@@ -328,10 +414,14 @@ export const useConfigStore = create<ConfigStoreState>((set, get) => ({
       name: input.name.trim(),
       provider: input.provider.trim(),
       baseUrl: normalizeBaseUrl(input.baseUrl),
+      apiFormat: normalizeApiFormat(input.apiFormat),
       apiKey: input.apiKey.trim(),
       availableModels: available,
       selectedModel: available.includes(input.selectedModel) ? input.selectedModel : (available[0] ?? ''),
       thinkingMode: normalizeThinkingMode(input.thinkingMode),
+      thinkingProfile: normalizeThinkingProfile(input.thinkingProfile),
+      thinkingCapability: normalizeThinkingCapability(input.thinkingCapability),
+      maxTokens: normalizeMaxTokens(input.maxTokens),
       temperature: clampTemperature(input.temperature, DEFAULT_TEMPERATURE),
       createdAt: now,
       updatedAt: now,
@@ -361,10 +451,14 @@ export const useConfigStore = create<ConfigStoreState>((set, get) => ({
       name: input.name.trim(),
       provider: input.provider.trim(),
       baseUrl: normalizeBaseUrl(input.baseUrl),
+      apiFormat: normalizeApiFormat(input.apiFormat),
       apiKey: input.apiKey.trim(),
       availableModels: available,
       selectedModel: available.includes(input.selectedModel) ? input.selectedModel : (available[0] ?? ''),
       thinkingMode: normalizeThinkingMode(input.thinkingMode),
+      thinkingProfile: normalizeThinkingProfile(input.thinkingProfile),
+      thinkingCapability: normalizeThinkingCapability(input.thinkingCapability),
+      maxTokens: normalizeMaxTokens(input.maxTokens),
       temperature: clampTemperature(input.temperature, DEFAULT_TEMPERATURE),
       updatedAt: Date.now(),
     };
@@ -416,6 +510,7 @@ export const useConfigStore = create<ConfigStoreState>((set, get) => ({
     try {
       const res = await apiFetchModels({
         baseUrl: normalizeBaseUrl(cred.baseUrl),
+        apiFormat: cred.apiFormat,
         apiKey: cred.apiKey.trim(),
       });
       const models: ModelItem[] = Array.isArray(res.models) ? res.models : [];
@@ -459,6 +554,7 @@ export const useConfigStore = create<ConfigStoreState>((set, get) => ({
     try {
       const res = await apiTestConnection({
         baseUrl: normalizeBaseUrl(cred.baseUrl),
+        apiFormat: cred.apiFormat,
         apiKey: cred.apiKey.trim(),
       });
       const result: ConnectionTestResult = {
@@ -533,10 +629,14 @@ export function toConfigInput(config: ModelConfig): ModelConfigInput {
     name: config.name,
     provider: config.provider,
     baseUrl: config.baseUrl,
+    apiFormat: config.apiFormat,
     apiKey: config.apiKey,
     availableModels: [...config.availableModels],
     selectedModel: config.selectedModel,
     thinkingMode: config.thinkingMode,
+    thinkingProfile: config.thinkingProfile,
+    thinkingCapability: config.thinkingCapability,
+    maxTokens: config.maxTokens,
     temperature: config.temperature,
   };
 }

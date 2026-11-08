@@ -9,7 +9,11 @@ const baseInput: ModelConfigInput = {
   apiKey: 'sk-test',
   availableModels: ['gpt-4o'],
   selectedModel: 'gpt-4o',
+  apiFormat: 'openai',
   thinkingMode: 'medium',
+  thinkingProfile: 'auto',
+  thinkingCapability: 'graded',
+  maxTokens: null,
   temperature: 0.3,
 };
 

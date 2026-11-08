@@ -4,7 +4,7 @@
 
 import type { Card } from './card';
 import type { BidRecord, BidScore, PlayRecord, SeatIndex } from './game';
-import type { Difficulty, Personality, ThinkingMode } from './config';
+import type { ApiFormat, Difficulty, Personality, ThinkingCapability, ThinkingMode, ThinkingProfile } from './config';
 
 /** 决策来源 —— 用于日志标注与 QA 判断降级是否生效 */
 export enum DecisionSource {
@@ -94,12 +94,22 @@ export interface AIDecisionTrace {
 export interface AIModelBinding {
   /** 服务 Base URL */
   baseUrl: string;
+  /** API 协议格式，缺省回落 openai（Gemini/Anthropic 原生协议由服务端翻译） */
+  apiFormat?: ApiFormat;
   /** API Key */
   apiKey: string;
   /** 具体模型 id */
   model: string;
   /** 思考模式（推理强度），缺省回落 'auto' */
   thinkingMode?: ThinkingMode;
+  /** 思考方言（厂商参数形状），缺省回落 'auto' 自动检测 */
+  thinkingProfile?: ThinkingProfile;
+  /** 模型思考能力声明，缺省回落 'graded' 分级 */
+  thinkingCapability?: ThinkingCapability;
+  /** 输出上限 max_tokens；null/缺省=未填写（思考开启时服务端自动抬预算） */
+  maxTokens?: number | null;
+  /** 玩家级决策超时秒数（5~120）；缺省=跟随全局设置（按模式与思考态自动放宽） */
+  timeoutSeconds?: number;
   /** 采样温度 0~2，缺省回落 0.3 */
   temperature?: number;
   /** 决策难度（简单/普通/困难/大师），缺省回落 normal；影响温度、思考强度与提示词分层 */
@@ -141,6 +151,10 @@ export interface AIPlayInput {
   timeoutMs?: number;
   /** 日志回调 */
   onLog?: AILogSink;
+  /** AI 思考内容增量回调（流式 reasoning，模型未返回思考时不触发） */
+  onThinking?: (delta: string) => void;
+  /** 本轮流式思考结束回调：ok=true 正常完成（done），false 失败（错误/中止） */
+  onThinkingSettled?: (ok: boolean) => void;
   /** 外部中止信号（H1：对局切换时中止在途 LLM 请求） */
   signal?: AbortSignal;
 }
@@ -158,6 +172,10 @@ export interface AIBidInput {
   highestBid: number;
   timeoutMs?: number;
   onLog?: AILogSink;
+  /** AI 思考内容增量回调（流式 reasoning，模型未返回思考时不触发） */
+  onThinking?: (delta: string) => void;
+  /** 本轮流式思考结束回调：ok=true 正常完成（done），false 失败（错误/中止） */
+  onThinkingSettled?: (ok: boolean) => void;
   /** 外部中止信号（H1：对局切换时中止在途 LLM 请求） */
   signal?: AbortSignal;
 }

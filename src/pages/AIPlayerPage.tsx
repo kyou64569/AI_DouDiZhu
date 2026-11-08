@@ -165,6 +165,7 @@ export function AIPlayerPage(): JSX.Element {
       persona: player.persona ?? '',
       difficulty: player.difficulty ?? '',
       personality: player.personality ?? '',
+      timeoutSeconds: player.timeoutSeconds !== undefined ? String(player.timeoutSeconds) : '',
     });
     setFormError('');
     setFormOpen(true);
@@ -436,6 +437,17 @@ export function AIPlayerPage(): JSX.Element {
                 placeholder="跟随默认"
                 onChange={(e) => patchDraft({ personality: e.target.value })}
                 hint="激进=敢叫分敢压牌；保守=惜牌多过；均衡=按牌力理性决策"
+              />
+              <Input
+                label="思考超时秒数（选填）"
+                type="number"
+                min={5}
+                max={120}
+                step={1}
+                value={draft.timeoutSeconds ?? ''}
+                onChange={(e) => patchDraft({ timeoutSeconds: e.target.value })}
+                placeholder="跟随全局设置"
+                hint="该玩家单次 AI 决策的硬超时。留空=跟随全局设置（人机 8s / 观战 20s，思考态放宽到 30s / 60s）；慢思考模型建议填 90~120"
               />
             </div>
           </div>

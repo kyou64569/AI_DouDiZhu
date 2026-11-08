@@ -18,7 +18,14 @@ import {
   type TestConnectionRequest,
   type TestConnectionResponse,
 } from '../types.js';
-import { chatCompletion, fetchModels, testConnection } from '../services/llmProxy.js';
+import { chatCompletion, chatCompletionStream, fetchModels, testConnection } from '../services/llmProxy.js';
+import type { ProxyStreamEvent } from '../services/llmProxy.js';
+import {
+  THINKING_LEVELS,
+  THINKING_PROFILE_SELECTIONS,
+  type ThinkingProfileSelection,
+} from '../services/thinkingAdapter.js';
+import { resolveApiFormat } from '../services/protocolAdapter.js';
 import { rateLimit } from '../services/httpUtils.js';
 import { logger, maskApiKey } from '../utils/logger.js';
 
@@ -40,10 +47,10 @@ function fail(code: number, message: string): ApiResponse<null> {
 }
 
 /**
- * 校验并提取 baseUrl / apiKey 公共字段。
+ * 校验并提取 baseUrl / apiKey / apiFormat 公共字段。
  * @throws ProxyError 参数缺失时
  */
-function requireBaseFields(body: unknown): { baseUrl: string; apiKey: string } {
+function requireBaseFields(body: unknown): { baseUrl: string; apiKey: string; apiFormat?: 'openai' | 'gemini' | 'anthropic' } {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) {
     throw new ProxyError(ErrorCode.INVALID_BODY, '请求体必须是 JSON 对象');
   }
@@ -59,7 +66,11 @@ function requireBaseFields(body: unknown): { baseUrl: string; apiKey: string } {
     throw new ProxyError(ErrorCode.MISSING_API_KEY, '缺少 apiKey');
   }
 
-  return { baseUrl, apiKey };
+  // 协议格式按白名单收敛，非法/缺省回落 openai（与 thinkingProfile 宽容口径一致）
+  const apiFormat: 'openai' | 'gemini' | 'anthropic' | undefined =
+    typeof obj.apiFormat === 'string' ? resolveApiFormat(obj.apiFormat) : undefined;
+
+  return { baseUrl, apiKey, apiFormat };
 }
 
 /**
@@ -71,8 +82,9 @@ function requireChatFields(body: unknown): {
   messages: ChatMessage[];
   temperature?: number;
   timeoutMs?: number;
-  thinking?: boolean;
-  reasoningEffort?: 'low' | 'medium' | 'high';
+  thinkingLevel?: 'off' | 'low' | 'medium' | 'high';
+  thinkingProfile?: ThinkingProfileSelection;
+  maxTokens?: number;
 } {
   const obj = body as Record<string, unknown>;
 
@@ -108,13 +120,25 @@ function requireChatFields(body: unknown): {
     typeof obj.temperature === 'number' && Number.isFinite(obj.temperature) ? obj.temperature : undefined;
   const timeoutMs: number | undefined =
     typeof obj.timeoutMs === 'number' && Number.isFinite(obj.timeoutMs) && obj.timeoutMs > 0 ? obj.timeoutMs : undefined;
-  const thinking: boolean | undefined = typeof obj.thinking === 'boolean' ? obj.thinking : undefined;
-  const reasoningEffort: 'low' | 'medium' | 'high' | undefined =
-    obj.reasoningEffort === 'low' || obj.reasoningEffort === 'medium' || obj.reasoningEffort === 'high'
-      ? obj.reasoningEffort
+  // 思考参数：档位与方言均按白名单收敛，非法值视为「未设置」（不发思考字段）。
+  // 前端下拉只发合法值，这里兜底防篡改 / 旧客户端。
+  const thinkingLevel: 'off' | 'low' | 'medium' | 'high' | undefined = THINKING_LEVELS.includes(
+    obj.thinkingLevel as (typeof THINKING_LEVELS)[number],
+  )
+    ? (obj.thinkingLevel as (typeof THINKING_LEVELS)[number])
+    : undefined;
+  const thinkingProfile: ThinkingProfileSelection | undefined = THINKING_PROFILE_SELECTIONS.includes(
+    obj.thinkingProfile as (typeof THINKING_PROFILE_SELECTIONS)[number],
+  )
+    ? (obj.thinkingProfile as ThinkingProfileSelection)
+    : undefined;
+  // 输出上限：正数即可（上游各自有天花板校验），非法值视为未填写（交给预算层决定）
+  const maxTokens: number | undefined =
+    typeof obj.maxTokens === 'number' && Number.isFinite(obj.maxTokens) && obj.maxTokens > 0
+      ? obj.maxTokens
       : undefined;
 
-  return { model, messages, temperature, timeoutMs, thinking, reasoningEffort };
+  return { model, messages, temperature, timeoutMs, thinkingLevel, thinkingProfile, maxTokens };
 }
 
 /**
@@ -140,7 +164,7 @@ router.post('/models', modelsLimiter, async (req: Request, res: Response): Promi
   const module = 'llm/models';
   try {
     const base = requireBaseFields(req.body);
-    const payload: FetchModelsRequest = { baseUrl: base.baseUrl, apiKey: base.apiKey };
+    const payload: FetchModelsRequest = { baseUrl: base.baseUrl, apiKey: base.apiKey, apiFormat: base.apiFormat };
     const data: FetchModelsResponse = await fetchModels(payload);
     res.status(200).json(ok(data));
   } catch (err: unknown) {
@@ -157,7 +181,11 @@ router.post('/test', testLimiter, async (req: Request, res: Response): Promise<v
   const module = 'llm/test';
   try {
     const base = requireBaseFields(req.body);
-    const payload: TestConnectionRequest = { baseUrl: base.baseUrl, apiKey: base.apiKey };
+    const payload: TestConnectionRequest = {
+      baseUrl: base.baseUrl,
+      apiKey: base.apiKey,
+      apiFormat: base.apiFormat,
+    };
     const data: TestConnectionResponse = await testConnection(payload);
     res.status(200).json(ok(data));
   } catch (err: unknown) {
@@ -177,17 +205,74 @@ router.post('/chat', chatLimiter, async (req: Request, res: Response): Promise<v
     const payload: ChatRequest = {
       baseUrl: base.baseUrl,
       apiKey: base.apiKey,
+      apiFormat: base.apiFormat,
       model: chat.model,
       messages: chat.messages,
       temperature: chat.temperature,
-      thinking: chat.thinking,
-      reasoningEffort: chat.reasoningEffort,
+      thinkingLevel: chat.thinkingLevel,
+      thinkingProfile: chat.thinkingProfile,
+      maxTokens: chat.maxTokens,
       timeoutMs: chat.timeoutMs,
     };
     logger.debug(module, '收到请求', { model: payload.model, key: maskApiKey(payload.apiKey) });
     const data: ChatResponse = await chatCompletion(payload);
     res.status(200).json(ok(data));
   } catch (err: unknown) {
+    sendError(res, module, err);
+  }
+});
+
+/**
+ * POST /api/llm/chat-stream
+ * 流式对话补全：以 NDJSON 逐行下发统一事件（thinking/answer/done/error）。
+ * 客户端断连时中止上游 fetch，避免空耗连接。
+ */
+router.post('/chat-stream', chatLimiter, async (req: Request, res: Response): Promise<void> => {
+  const module = 'llm/chat-stream';
+  try {
+    const base = requireBaseFields(req.body);
+    const chat = requireChatFields(req.body);
+    const payload: ChatRequest = {
+      baseUrl: base.baseUrl,
+      apiKey: base.apiKey,
+      apiFormat: base.apiFormat,
+      model: chat.model,
+      messages: chat.messages,
+      temperature: chat.temperature,
+      thinkingLevel: chat.thinkingLevel,
+      thinkingProfile: chat.thinkingProfile,
+      maxTokens: chat.maxTokens,
+      timeoutMs: chat.timeoutMs,
+    };
+    logger.debug(module, '收到请求', { model: payload.model, key: maskApiKey(payload.apiKey) });
+
+    res.status(200);
+    res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache');
+    // 关闭中间层缓冲（Nginx 等），本机直连/桌面版无碍，公网部署时保流式
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders();
+
+    // 客户端断连 → 中止上游 fetch（chatCompletionStream 内部通过该信号联动）
+    const upstreamAbort: AbortController = new AbortController();
+    let closed: boolean = false;
+    res.on('close', (): void => {
+      closed = true;
+      upstreamAbort.abort();
+    });
+    const send = (event: ProxyStreamEvent): void => {
+      if (closed || res.writableEnded) {
+        return;
+      }
+      res.write(`${JSON.stringify(event)}\n`);
+    };
+
+    await chatCompletionStream(payload, send, upstreamAbort.signal);
+    if (!closed && !res.writableEnded) {
+      res.end();
+    }
+  } catch (err: unknown) {
+    // chatCompletionStream 内部已把一切异常转成 error 事件；走到这里属于框架级异常
     sendError(res, module, err);
   }
 });

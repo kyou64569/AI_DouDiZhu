@@ -15,12 +15,12 @@ import { getLegalBids } from '@/engine/bidding';
 import { hand } from '../helpers/cards';
 
 vi.mock('@/api/llm', () => ({
-  chatCompletion: vi.fn(),
+  chatCompletionStream: vi.fn(),
   AI_TIMEOUT_MS: 8000,
 }));
 
-import { chatCompletion } from '@/api/llm';
-const mockedChat = vi.mocked(chatCompletion);
+import { chatCompletionStream } from '@/api/llm';
+const mockedChat = vi.mocked(chatCompletionStream);
 
 /** 标准叫分输入。 */
 function baseBidInput(overrides: Partial<AIBidInput> = {}): AIBidInput {

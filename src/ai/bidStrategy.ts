@@ -19,7 +19,7 @@ import {
 } from '@/types/ai';
 import type { ThinkingMode } from '@/types/config';
 import { DEFAULT_THINKING_MODE } from '@/types/config';
-import { chatCompletion, AI_TIMEOUT_MS } from '@/api/llm';
+import { chatCompletionStream, AI_TIMEOUT_MS } from '@/api/llm';
 import { toErrorMessage } from '@/api/client';
 import { getLegalBids } from '@/engine/bidding';
 import { countByRank } from '@/engine/cards';
@@ -193,6 +193,9 @@ export async function decideBid(input: AIBidInput): Promise<AIBidDecision> {
   try {
     return await runBidDecision(input, startedAt);
   } catch (error: unknown) {
+    // 同 decidePlay：兜底出口必须 settle（begin 后未进 LLM try/catch 的异常路径），
+    // settle 在无 live 时是安全 no-op
+    input.onThinkingSettled?.(false);
     const message: string = toErrorMessage(error);
     // L8：防御 input 异常导致二次抛异常
     let safeOnLog: AILogSink | undefined;
@@ -262,26 +265,34 @@ async function runBidDecision(input: AIBidInput, startedAt: number): Promise<AIB
     const messages: ChatMessage[] = buildBidMessages(input);
     const thinkingMode: ThinkingMode = binding.thinkingMode ?? DEFAULT_THINKING_MODE;
     const effectiveThinkingMode: ThinkingMode = resolveDifficultyThinking(binding.difficulty, thinkingMode);
-    const resolvedThinking = resolveThinking(binding.model, effectiveThinkingMode);
+    const resolvedThinking = resolveThinking(binding.model, effectiveThinkingMode, binding.thinkingCapability);
     // 超时已由 settingsStore 统一计算，此处直接使用
     const effectiveTimeoutMs: number = timeoutMs;
-    const response = await chatCompletion(
+    const response = await chatCompletionStream(
       {
         baseUrl: binding.baseUrl,
+        apiFormat: binding.apiFormat ?? 'openai',
         apiKey: binding.apiKey,
         model: binding.model,
         messages,
         // 难度覆盖温度：简单调高、困难/大师调低，普通沿用配置温度
         temperature: resolveDifficultyTemperature(binding.difficulty, binding.temperature),
-        thinking: resolvedThinking.thinking,
-        reasoningEffort: resolvedThinking.reasoningEffort,
+        thinkingLevel: resolvedThinking.level ?? undefined,
+        thinkingProfile: binding.thinkingProfile ?? 'auto',
+        maxTokens: binding.maxTokens ?? undefined,
         timeoutMs: effectiveTimeoutMs,
       },
-      { timeoutMs: effectiveTimeoutMs, signal: input.signal },
+      {
+        onThinking: (delta: string): void => input.onThinking?.(delta),
+        signal: input.signal,
+        timeoutMs: effectiveTimeoutMs,
+      },
     );
+    input.onThinkingSettled?.(true);
     content = response.content;
   } catch (error: unknown) {
     // ---------- 第 0 层：网络异常 / 超时 ----------
+    input.onThinkingSettled?.(false);
     const message: string = toErrorMessage(error);
     warnings.push(`LLM 叫分请求失败：${message}`);
     const decision: AIBidDecision = buildHeuristic(DecisionSource.FALLBACK_ERROR, '模型请求失败');

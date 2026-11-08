@@ -4,6 +4,8 @@
  * 本文件字段必须与 `server/types.ts` 完全一致（DESIGN §4.6）。
  */
 
+import type { ApiFormat, ThinkingProfile } from './config';
+
 /** 统一响应信封 */
 export interface ApiResponse<T> {
   /** 0 表示成功，非 0 为错误码 */
@@ -19,7 +21,7 @@ export interface LLMBaseRequest {
 }
 
 /** POST /api/llm/models —— 拉取模型列表（REQ-M2） */
-export type FetchModelsRequest = LLMBaseRequest;
+export type FetchModelsRequest = LLMBaseRequest & { apiFormat?: ApiFormat };
 
 /** 归一化后的单个模型条目 */
 export interface ModelItem {
@@ -32,7 +34,7 @@ export interface FetchModelsResponse {
 }
 
 /** POST /api/llm/test —— 连通性测试（REQ-M3） */
-export type TestConnectionRequest = LLMBaseRequest;
+export type TestConnectionRequest = LLMBaseRequest & { apiFormat?: ApiFormat };
 
 export interface TestConnectionResponse {
   success: boolean;
@@ -53,10 +55,20 @@ export interface ChatRequest extends LLMBaseRequest {
   model: string;
   messages: ChatMessage[];
   temperature?: number;
-  /** 是否开启推理（thinking）模式；由服务商语义决定，缺省不开启 */
-  thinking?: boolean;
-  /** 推理强度，仅 thinking 开启时有效：low / medium / high */
-  reasoningEffort?: 'low' | 'medium' | 'high';
+  /** API 协议格式：openai（默认，/chat/completions）/ gemini / anthropic（原生协议由服务端翻译） */
+  apiFormat?: ApiFormat;
+  /**
+   * 思考档位（能力折叠后的最终意图）：
+   * 'off'=显式关闭；'low'~'high'=分档思考；缺省=未设置（不发任何思考字段，≠ off）
+   */
+  thinkingLevel?: 'off' | 'low' | 'medium' | 'high';
+  /** 思考方言选择（厂商参数形状），缺省 'auto' 自动检测 */
+  thinkingProfile?: ThinkingProfile;
+  /**
+   * 输出上限（上游 max_tokens）。显式填写永远优先；未填写时思考开启按档位自动抬预算，
+   * off 与未设置不发送该字段。
+   */
+  maxTokens?: number;
   /** 请求超时毫秒数，默认 8000（PRD D4） */
   timeoutMs?: number;
 }

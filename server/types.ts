@@ -20,7 +20,7 @@ export interface LLMBaseRequest {
 }
 
 /** POST /api/llm/models —— 拉取模型列表 */
-export type FetchModelsRequest = LLMBaseRequest;
+export type FetchModelsRequest = LLMBaseRequest & { apiFormat?: string };
 
 /** 归一化后的单个模型条目 */
 export interface ModelItem {
@@ -33,7 +33,7 @@ export interface FetchModelsResponse {
 }
 
 /** POST /api/llm/test —— 连通性测试 */
-export type TestConnectionRequest = LLMBaseRequest;
+export type TestConnectionRequest = LLMBaseRequest & { apiFormat?: string };
 
 export interface TestConnectionResponse {
   success: boolean;
@@ -54,10 +54,30 @@ export interface ChatRequest extends LLMBaseRequest {
   model: string;
   messages: ChatMessage[];
   temperature?: number;
-  /** 是否开启推理（thinking）模式 */
-  thinking?: boolean;
-  /** 推理强度：low / medium / high */
-  reasoningEffort?: 'low' | 'medium' | 'high';
+  /** API 协议格式：openai（默认）/ gemini / anthropic；非法值回落 openai */
+  apiFormat?: 'openai' | 'gemini' | 'anthropic';
+  /**
+   * 思考档位（前端能力折叠后的最终意图）：
+   * 'off'=显式关闭（按方言发禁用字段）；'low'~'high'=分档思考；缺省=未设置（不发任何思考字段）
+   */
+  thinkingLevel?: 'off' | 'low' | 'medium' | 'high';
+  /** 思考方言选择：'auto'（按 baseUrl/model 检测，检测不出省略）或具体方言键；缺省按 'auto' */
+  thinkingProfile?:
+    | 'auto'
+    | 'openai-native'
+    | 'chat-template'
+    | 'thinking-flag'
+    | 'thinking-type'
+    | 'effort-only'
+    | 'thinking-mode'
+    | 'nvidia'
+    | 'deepseek-thinking';
+  /**
+   * 输出上限（上游 max_tokens）。显式填写永远优先（无论思考是否开启）；
+   * 未填写时思考开启（low/medium/high）会按档位自动抬预算（低 4096/中 8192/高 24576），
+   * off 与未设置不发送该字段。
+   */
+  maxTokens?: number;
   /** 请求超时毫秒数，默认 8000 */
   timeoutMs?: number;
 }
@@ -132,6 +152,8 @@ export const ErrorCode = {
   NETWORK_TIMEOUT: 3001,
   /** 连接失败 */
   NETWORK_UNREACHABLE: 3002,
+  /** 客户端主动取消/断连（与前端 ApiErrorCode.CLIENT_ABORTED 同值，3000 段内） */
+  CLIENT_ABORTED: 3003,
 
   /** 未知错误 */
   UNKNOWN: 9000,

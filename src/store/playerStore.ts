@@ -48,6 +48,8 @@ export interface AIPlayerInput {
   difficulty?: string;
   /** 决策性格（可选；'' 表示跟随默认「均衡」） */
   personality?: string;
+  /** AI 决策超时秒数（可选；'' 表示跟随全局设置。5~120 的整数） */
+  timeoutSeconds?: string;
 }
 
 /** 变更结果，供页面统一处理提示 */
@@ -72,6 +74,7 @@ export const EMPTY_PLAYER_INPUT: AIPlayerInput = {
   persona: '',
   difficulty: '',
   personality: '',
+  timeoutSeconds: '',
 };
 
 /** 名称最大长度 */
@@ -110,6 +113,7 @@ function normalizePlayer(raw: AIPlayer): AIPlayer {
     persona: isPersona(record.persona) ? (record.persona as Persona) : undefined,
     difficulty: isDifficulty(record.difficulty) ? (record.difficulty as Difficulty) : undefined,
     personality: isPersonality(record.personality) ? (record.personality as Personality) : undefined,
+    timeoutSeconds: normalizeTimeoutSeconds(record.timeoutSeconds),
     createdAt: toFiniteNumber(record.createdAt, now),
     updatedAt: toFiniteNumber(record.updatedAt, now),
   };
@@ -177,6 +181,22 @@ function isPersonality(value: unknown): value is Personality {
   return typeof value === 'string' && (PERSONALITIES as readonly string[]).includes(value);
 }
 
+/** 玩家决策超时范围（秒）：下限与全局一致，上限对齐服务端 120s 钳制 */
+export const MIN_PLAYER_TIMEOUT_SECONDS: number = 5;
+export const MAX_PLAYER_TIMEOUT_SECONDS: number = 120;
+
+/**
+ * 把任意输入归一化为合法的玩家决策超时秒数：5~120 的整数保留，其余视为未填写。
+ * 表单值是字符串（'90'），localStorage 旧数据是数字，两种都要兼容。
+ */
+function normalizeTimeoutSeconds(value: unknown): number | undefined {
+  const num: number = typeof value === 'number' ? value : Number(value);
+  if (Number.isInteger(num) && num >= MIN_PLAYER_TIMEOUT_SECONDS && num <= MAX_PLAYER_TIMEOUT_SECONDS) {
+    return num;
+  }
+  return undefined;
+}
+
 export function validatePlayerInput(input: AIPlayerInput): string | null {
   const name: string = input.name.trim();
   if (name.length === 0) {
@@ -187,6 +207,15 @@ export function validatePlayerInput(input: AIPlayerInput): string | null {
   }
   if (input.modelConfigId.trim().length === 0) {
     return '请选择绑定的模型配置';
+  }
+  // 思考超时为后加字段：留空合法；显式填写（表单为字符串）必须是 5~120 的整数
+  const raw: Record<string, unknown> = input as unknown as Record<string, unknown>;
+  const timeout: unknown = raw.timeoutSeconds;
+  if (timeout !== undefined && timeout !== null && String(timeout).trim() !== '') {
+    const num: number = Number(timeout);
+    if (!Number.isInteger(num) || num < MIN_PLAYER_TIMEOUT_SECONDS || num > MAX_PLAYER_TIMEOUT_SECONDS) {
+      return `思考超时需为 ${MIN_PLAYER_TIMEOUT_SECONDS}~${MAX_PLAYER_TIMEOUT_SECONDS} 的整数秒`;
+    }
   }
   return null;
 }
@@ -253,6 +282,7 @@ export const usePlayerStore = create<PlayerStoreState>((set, get) => ({
       persona: isPersona(input.persona) ? (input.persona as Persona) : undefined,
       difficulty: isDifficulty(input.difficulty) ? (input.difficulty as Difficulty) : undefined,
       personality: isPersonality(input.personality) ? (input.personality as Personality) : undefined,
+      timeoutSeconds: normalizeTimeoutSeconds(input.timeoutSeconds),
       createdAt: now,
       updatedAt: now,
     };
@@ -291,6 +321,7 @@ export const usePlayerStore = create<PlayerStoreState>((set, get) => ({
       persona: isPersona(input.persona) ? (input.persona as Persona) : undefined,
       difficulty: isDifficulty(input.difficulty) ? (input.difficulty as Difficulty) : undefined,
       personality: isPersonality(input.personality) ? (input.personality as Personality) : undefined,
+      timeoutSeconds: normalizeTimeoutSeconds(input.timeoutSeconds),
       updatedAt: Date.now(),
     };
 

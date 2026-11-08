@@ -1,7 +1,7 @@
 /**
  * AI 出牌编排层（四层降级链路 + 永不 reject 契约）。
  *
- * 通过 vi.mock('@/api/llm') 把 chatCompletion 替换成可控桩，
+ * 通过 vi.mock('@/api/llm') 把 chatCompletionStream 替换成可控桩，
  * 覆盖四层降级：L0 无绑定/网络异常、L1 解析失败、L2 映射失败、L3 校验失败。
  *
  * 铁律：decidePlay 返回的 Promise【永远 resolve，永不 reject】。
@@ -15,12 +15,12 @@ import { hand, isSubsetByIdentity, pattern } from '../helpers/cards';
 
 // 把网络调用替换成可控 mock，避免真实请求。
 vi.mock('@/api/llm', () => ({
-  chatCompletion: vi.fn(),
+  chatCompletionStream: vi.fn(),
   AI_TIMEOUT_MS: 8000,
 }));
 
-import { chatCompletion } from '@/api/llm';
-const mockedChat = vi.mocked(chatCompletion);
+import { chatCompletionStream } from '@/api/llm';
+const mockedChat = vi.mocked(chatCompletionStream);
 
 /** 构造一条有效出牌记录。 */
 function record(seat: number, spec: string): PlayRecord {
@@ -218,17 +218,27 @@ describe('decidePlay · 思考模式与温度透传', () => {
     expect(lastRequest().temperature).toBeCloseTo(1.2);
   });
 
-  it('thinkingMode=high → 透传 thinking + reasoningEffort', async () => {
+  it('thinkingMode=high → 透传 thinkingLevel=high（能力折叠后的最终档位）', async () => {
     llmReturns('{"action":"play","cards":["3"],"reason":"ok"}');
     await decidePlay(
       baseInput({ binding: { baseUrl: 'http://llm.test', apiKey: 'k', model: 'gpt-4o', thinkingMode: 'high' } }),
     );
     const req = lastRequest();
-    expect(req.thinking).toBe(true);
-    expect(req.reasoningEffort).toBe('high');
+    expect(req.thinkingLevel).toBe('high');
+    expect(req.thinkingProfile).toBe('auto');
+    // 绑定未填写输出上限 → 不透传 maxTokens（由服务端预算层按档位决定）
+    expect(req.maxTokens).toBeUndefined();
   });
 
-  it('thinkingMode=off → 关闭思考且不带强度', async () => {
+  it('绑定填写了 maxTokens → 原样透传（用户填写的输出上限永远优先）', async () => {
+    llmReturns('{"action":"play","cards":["3"],"reason":"ok"}');
+    await decidePlay(
+      baseInput({ binding: { baseUrl: 'http://llm.test', apiKey: 'k', model: 'gpt-4o', maxTokens: 2048 } }),
+    );
+    expect(lastRequest().maxTokens).toBe(2048);
+  });
+
+  it('thinkingMode=off → 透传 thinkingLevel=off（显式关闭 ≠ 未设置）', async () => {
     llmReturns('{"action":"play","cards":["3"],"reason":"ok"}');
     await decidePlay(
       baseInput({
@@ -236,23 +246,22 @@ describe('decidePlay · 思考模式与温度透传', () => {
       }),
     );
     const req = lastRequest();
-    expect(req.thinking).toBe(false);
-    expect(req.reasoningEffort).toBeUndefined();
+    expect(req.thinkingLevel).toBe('off');
   });
 
-  it('thinkingMode=auto → 推理模型自动开启，普通模型不开', async () => {
+  it('thinkingMode=auto → 推理模型透传 medium，普通模型不发任何档位（未设置）', async () => {
     llmReturns('{"action":"play","cards":["3"],"reason":"ok"}');
     await decidePlay(
       baseInput({
         binding: { baseUrl: 'http://llm.test', apiKey: 'k', model: 'deepseek-reasoner', thinkingMode: 'auto' },
       }),
     );
-    expect(lastRequest().thinking).toBe(true);
+    expect(lastRequest().thinkingLevel).toBe('medium');
 
     await decidePlay(
       baseInput({ binding: { baseUrl: 'http://llm.test', apiKey: 'k', model: 'gpt-4o', thinkingMode: 'auto' } }),
     );
-    expect(lastRequest().thinking).toBe(false);
+    expect(lastRequest().thinkingLevel).toBeUndefined();
   });
 });
 

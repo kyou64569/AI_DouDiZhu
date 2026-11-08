@@ -27,9 +27,15 @@ vi.mock('@/api/llm', async () => {
   const actual = await vi.importActual<typeof import('@/api/llm')>('@/api/llm');
   return {
     ...actual,
+    // 复盘（review.ts）仍走非流式 chatCompletion
     chatCompletion: vi.fn(async () => ({
       content: '{"summary":"整体思路清晰，降级手需要修正。","comments":["最小牌处理合理","压制时机正确","收官干脆"]}',
       latencyMs: 5,
+    })),
+    // AI 决策走流式（本测试用脚本驱动器，实际不会调用；保底防真实网络）
+    chatCompletionStream: vi.fn(async () => ({
+      content: '',
+      latencyMs: 0,
     })),
   };
 });
@@ -71,9 +77,13 @@ function setupBoundPlayers(): void {
     provider: 'Test',
     baseUrl: 'http://llm.test',
     apiKey: 'k-test',
+    apiFormat: 'openai',
     availableModels: ['test-model'],
     selectedModel: 'test-model',
     thinkingMode: 'off',
+    thinkingProfile: 'auto',
+    thinkingCapability: 'graded',
+    maxTokens: null,
     temperature: 0.3,
     createdAt: 0,
     updatedAt: 0,

@@ -20,6 +20,102 @@ export const THINKING_LABELS: Record<ThinkingMode, string> = {
 /** 出厂默认思考模式 */
 export const DEFAULT_THINKING_MODE: ThinkingMode = 'auto';
 
+/**
+ * 思考方言（thinkingProfile）：把「思考意图档位」翻译成各厂商认得的请求体字段。
+ * 各方言在「关闭思考」的字段位置 / 形状 / 类型上互不兼容，必须分条声明（方言一览见 server/services/thinkingAdapter.ts 头注释）：
+ * - openai-native：顶层 `enable_thinking` + `reasoning_effort`（Qwen3 / vLLM 事实标准）
+ * - chat-template：嵌套 `chat_template_kwargs.enable_thinking`（小红书 Dots / Agnes / 书生方舟发现网关 discovery-api；顶层写法被静默忽略）
+ * - thinking-flag：字符串 `thinking:"enabled"/"disabled"`（MiniMax-M3）
+ * - thinking-type：对象 `thinking:{"type":"enabled"/"disabled"}`（腾讯混元；与上一条同名字段不同形状，互不通用）
+ * - effort-only：仅 `reasoning_effort`，无独立开关（OpenAI o 系；关闭=发 "none"）
+ * - thinking-mode：布尔 `thinking_mode`，无强度档（仅 Intern-S1 官方端点 chat.intern-ai.org.cn；传字符串会被 400；
+ *   书生方舟发现网关 discovery-api 不认此字段，须用 chat-template）
+ * - nvidia：布尔 `thinking`（NVIDIA NIM / Nemotron；无强度档，建议配 binary 能力声明；传字符串会被 400）
+ * - deepseek-thinking：布尔 `thinking`（DeepSeek 旧式写法，本仓兼容保留，无已知禁用字段）
+ * - auto：按 baseUrl host / model 关键词自动检测（存量默认，检测不出时不发任何思考字段）
+ */
+export type ThinkingProfile =
+  | 'auto'
+  | 'openai-native'
+  | 'chat-template'
+  | 'thinking-flag'
+  | 'thinking-type'
+  | 'effort-only'
+  | 'thinking-mode'
+  | 'nvidia'
+  | 'deepseek-thinking';
+
+/** 全部思考方言（用于 UI 渲染） */
+export const THINKING_PROFILES: ThinkingProfile[] = [
+  'auto',
+  'openai-native',
+  'chat-template',
+  'thinking-flag',
+  'thinking-type',
+  'effort-only',
+  'thinking-mode',
+  'nvidia',
+  'deepseek-thinking',
+];
+
+/** 思考方言中文标签 */
+export const THINKING_PROFILE_LABELS: Record<ThinkingProfile, string> = {
+  auto: '自动检测',
+  'openai-native': '标准型（Qwen3 / vLLM）',
+  'chat-template': '嵌套型（Dots / Agnes / 书生发现网关）',
+  'thinking-flag': '字符串型（MiniMax）',
+  'thinking-type': '对象型（腾讯混元）',
+  'effort-only': '仅强度（OpenAI o 系）',
+  'thinking-mode': '布尔开关（仅 Intern-S1 官方端点）',
+  nvidia: '英伟达 NIM（布尔）',
+  'deepseek-thinking': 'DeepSeek 旧式（布尔）',
+};
+
+/** 出厂默认思考方言（自动检测：保持存量配置行为不变） */
+export const DEFAULT_THINKING_PROFILE: ThinkingProfile = 'auto';
+
+/**
+ * 模型思考能力声明（thinkingCapability），避免「假分级」：
+ * - graded：真分级，低/中/高各自生效
+ * - binary：只支持开/关，低/中/高在前端归一成「高（满血）」再发
+ * - none：无思考能力，不传任何思考参数
+ */
+export type ThinkingCapability = 'graded' | 'binary' | 'none';
+
+/** 全部思考能力（用于 UI 渲染） */
+export const THINKING_CAPABILITIES: ThinkingCapability[] = ['graded', 'binary', 'none'];
+
+/** 思考能力中文标签 */
+export const THINKING_CAPABILITY_LABELS: Record<ThinkingCapability, string> = {
+  graded: '分级推理（低/中/高生效）',
+  binary: '仅开/关（档位按满血发送）',
+  none: '无思考能力（不发参数）',
+};
+
+/** 出厂默认思考能力 */
+export const DEFAULT_THINKING_CAPABILITY: ThinkingCapability = 'graded';
+
+/**
+ * API 协议格式（apiFormat）：同一套「思考意图档位」在不同协议下的请求/响应形状由服务端翻译。
+ * - openai：OpenAI 兼容 /chat/completions（默认，方言由 thinkingProfile 表达）
+ * - gemini：Google Gemini 原生 generateContent（thinkingConfig.thinkingLevel）
+ * - anthropic：Anthropic 原生 /v1/messages（thinking.budget_tokens，max_tokens 必填）
+ */
+export type ApiFormat = 'openai' | 'gemini' | 'anthropic';
+
+/** 全部协议格式（用于 UI 渲染） */
+export const API_FORMATS: ApiFormat[] = ['openai', 'gemini', 'anthropic'];
+
+/** 协议格式中文标签 */
+export const API_FORMAT_LABELS: Record<ApiFormat, string> = {
+  openai: 'OpenAI 兼容（/chat/completions）',
+  gemini: 'Gemini 原生（generateContent）',
+  anthropic: 'Anthropic 原生（/v1/messages）',
+};
+
+/** 出厂默认协议格式 */
+export const DEFAULT_API_FORMAT: ApiFormat = 'openai';
+
 /** 出厂默认采样温度（斗地主是确定性博弈，偏低更稳） */
 export const DEFAULT_TEMPERATURE = 0.3;
 
@@ -111,6 +207,8 @@ export interface ModelConfig {
   provider: string;
   /** Base URL，如 "https://api.openai.com/v1" */
   baseUrl: string;
+  /** API 协议格式，默认 'openai'（OpenAI 兼容）；Gemini/Anthropic 原生协议选对应项 */
+  apiFormat: ApiFormat;
   /** API Key，明文存 localStorage（PRD D1 已接受，加密为 P2） */
   apiKey: string;
   /** 已拉取的可用模型 id 列表 */
@@ -119,6 +217,12 @@ export interface ModelConfig {
   selectedModel: string;
   /** AI 思考模式（推理强度），默认 'auto' */
   thinkingMode: ThinkingMode;
+  /** 思考方言（厂商参数形状）选择，默认 'auto' 自动检测 */
+  thinkingProfile: ThinkingProfile;
+  /** 模型思考能力声明，默认 'graded' 分级 */
+  thinkingCapability: ThinkingCapability;
+  /** 输出上限 max_tokens；null=未填写（思考开启时按档位自动抬预算） */
+  maxTokens: number | null;
   /** 采样温度 0~2，默认 0.3 */
   temperature: number;
   createdAt: number;
@@ -165,6 +269,12 @@ export interface AIPlayer {
   difficulty?: Difficulty;
   /** 决策性格（激进/均衡/保守），注入提示词影响叫分与出牌风格 */
   personality?: Personality;
+  /**
+   * 该玩家的 AI 决策超时秒数（5~120）。
+   * 未填写时跟随全局设置（人机 8s / 观战 20s，思考态放宽到 30s / 60s）；
+   * 填写后为该玩家的固定决策硬超时（覆盖全局，含思考态），供慢思考模型使用。
+   */
+  timeoutSeconds?: number;
   createdAt: number;
   updatedAt: number;
 }

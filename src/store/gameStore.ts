@@ -66,6 +66,7 @@ import type { PuzzleLevel } from '@/types/puzzle';
 import { resolveTimeoutMs } from './settingsStore';
 import { isThinkingEnabled } from '@/ai/thinking';
 import { logSink, useLogStore } from './logStore';
+import { useThinkingStore } from './thinkingStore';
 import { playSfx, startBackground, stopBackground, speak } from '@/audio/soundService';
 import { describePlay, describePass } from '@/audio/cardSpeech';
 import { formatCards } from '@/engine/sort';
@@ -113,9 +114,14 @@ function resolveBinding(aiPlayerId: string | undefined): AIModelBinding | null {
   }
   return {
     baseUrl: config.baseUrl,
+    apiFormat: config.apiFormat,
     apiKey: config.apiKey,
     model,
     thinkingMode: config.thinkingMode,
+    thinkingProfile: config.thinkingProfile,
+    thinkingCapability: config.thinkingCapability,
+    maxTokens: config.maxTokens,
+    timeoutSeconds: player.timeoutSeconds,
     temperature: config.temperature,
     // 难度 / 性格属于 AI 玩家自身属性，随绑定快照一起下发（建议清单 #1/#2）
     difficulty: player.difficulty,
@@ -897,7 +903,20 @@ export const useGameStore = create<GameStoreState>((set, get) => {
   function buildPlayInput(st: GameStoreState, seat: SeatIndex): AIPlayInput {
     const binding = resolveBinding(st.players[seat].aiPlayerId);
     // 思考态（推理模型）显著更慢，按模式放宽硬超时，避免思考被打断后退化为贪心兜底
-    const thinkingOn: boolean = binding ? isThinkingEnabled(binding.thinkingMode ?? 'auto', binding.model) : false;
+    const thinkingOn: boolean = binding
+      ? isThinkingEnabled(binding.thinkingMode ?? 'auto', binding.model, binding.thinkingCapability)
+      : false;
+    // 开始本轮流式思考（思考日志标签页实时显示；无思考增量时也会落一条空记录）。
+    // 仅在绑定了模型时才 begin：未绑定走本地兜底、不经过编排层 LLM try/catch，
+    // 没有任何出口会回调 onThinkingSettled，无守卫会让面板卡在一条空的「思考中」流
+    if (binding !== null) {
+      useThinkingStore.getState().begin({
+        seat,
+        playerName: st.players[seat].name,
+        phase: 'play',
+        round: `第 ${st.playHistory.length + 1} 手`,
+      });
+    }
     return {
       seat,
       playerName: st.players[seat].name,
@@ -916,9 +935,14 @@ export const useGameStore = create<GameStoreState>((set, get) => {
       multiplier: st.multiplier,
       baseScore: st.baseScore,
       // 超时按房间模式取自全局设置：人机默认 8s 保节奏，观战默认 20s 让模型想清楚；
-      // 思考态进一步放宽到 30s / 60s
-      timeoutMs: resolveTimeoutMs(st.roomMode, thinkingOn),
+      // 思考态进一步放宽到 30s / 60s；玩家单独配置了思考超时则硬性覆盖（慢思考模型用）
+      timeoutMs:
+        binding !== null && binding.timeoutSeconds !== undefined
+          ? binding.timeoutSeconds * 1000
+          : resolveTimeoutMs(st.roomMode, thinkingOn),
       onLog: logSink,
+      onThinking: (delta: string): void => useThinkingStore.getState().appendThinking(delta),
+      onThinkingSettled: (ok: boolean): void => useThinkingStore.getState().settle(ok),
       signal: aiAbortController?.signal,
     };
   }
@@ -946,7 +970,18 @@ export const useGameStore = create<GameStoreState>((set, get) => {
   /** 构造 AI 叫分输入快照 */
   function buildBidInput(st: GameStoreState, seat: SeatIndex): AIBidInput {
     const binding = resolveBinding(st.players[seat].aiPlayerId);
-    const thinkingOn: boolean = binding ? isThinkingEnabled(binding.thinkingMode ?? 'auto', binding.model) : false;
+    const thinkingOn: boolean = binding
+      ? isThinkingEnabled(binding.thinkingMode ?? 'auto', binding.model, binding.thinkingCapability)
+      : false;
+    // 同上：仅绑定模型时才 begin（未绑定走本地兜底，无人 settle，会卡「思考中」）
+    if (binding !== null) {
+      useThinkingStore.getState().begin({
+        seat,
+        playerName: st.players[seat].name,
+        phase: 'bid',
+        round: '叫分',
+      });
+    }
     return {
       seat,
       playerName: st.players[seat].name,
@@ -954,9 +989,14 @@ export const useGameStore = create<GameStoreState>((set, get) => {
       hand: st.players[seat].hand,
       bidHistory: st.bidHistory,
       highestBid: st.highestBid,
-      // 同上：叫分阶段也遵循同一份按模式区分的超时设置；思考态放宽
-      timeoutMs: resolveTimeoutMs(st.roomMode, thinkingOn),
+      // 同上：叫分阶段也遵循同一份按模式区分的超时设置；思考态放宽；玩家单独配置则硬性覆盖
+      timeoutMs:
+        binding !== null && binding.timeoutSeconds !== undefined
+          ? binding.timeoutSeconds * 1000
+          : resolveTimeoutMs(st.roomMode, thinkingOn),
       onLog: logSink,
+      onThinking: (delta: string): void => useThinkingStore.getState().appendThinking(delta),
+      onThinkingSettled: (ok: boolean): void => useThinkingStore.getState().settle(ok),
       signal: aiAbortController?.signal,
     };
   }
@@ -995,6 +1035,7 @@ export const useGameStore = create<GameStoreState>((set, get) => {
       stopBackground();
       // 新开局：清空上一局残留的 AI 思考日志（修复：观战模式进入牌桌后残留上次内容）
       useLogStore.getState().clear();
+      useThinkingStore.getState().clear();
       resetTraces();
 
       const players: [Player, Player, Player] = buildPlayers(room);
@@ -1137,6 +1178,7 @@ export const useGameStore = create<GameStoreState>((set, get) => {
         if (result.needRedeal) {
           // 流局重发/强制地主 = 新一局开始：一并清空叫分阶段的思考日志
           useLogStore.getState().clear();
+          useThinkingStore.getState().clear();
           const redealCount: number = st.redealCount + 1;
           if (redealCount > MAX_REDEAL) {
             // 兜底：连续流局过多，强制当前最后一个叫分者当地主、底分 1

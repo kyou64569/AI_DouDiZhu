@@ -7,6 +7,9 @@ node_modules/
 dist/
 dist-ssr/
 build/
+out/
+release/
+desktop-release/
 .tsbuild/
 *.tsbuildinfo
 
@@ -49,16 +52,13 @@ vite.config.ts.timestamp-*.mjs
 # 端口联动文件（pick-api-port.mjs 运行时生成，机器相关）
 .apiport
 
-# 开发中间过程文档与代码审查报告（不入库，2026-08-15 起）
-docs/reports/
-docs/code-review-*.md
+# 文档：仅 README.md 入库，其余 markdown（DESIGN / PRD / 报告 / 桌面版指南等）一律不入库（2026-11-08 起）
+*.md
+!README.md
 
 # 配置导出文件（含 API Key，禁止入库；导出默认文件名 doudizhu-config-*.json）
 doudizhu-config-*.json
 *.config-export.json
-
-# 项目文档（PRD 不入库）
-docs/PRD.md
 
 # 编辑器与系统
 .vscode/*

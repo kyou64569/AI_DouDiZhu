@@ -69,7 +69,7 @@ describe('提示词 · 合法出牌选项注入（治本：不让模型自己数
     expect(user).toContain('合法出牌选项');
     expect(user).toContain('4 4'); // 引擎算出来并对4列出来（用户真实 bug：模型说自己没对子）
     expect(user).toContain('对子');
-    expect(user).toContain('action 就选 "play"'); // 决策指令引用该列表
+    expect(user).toContain('列表非空时通常应选 "play"'); // 决策指令引用该列表
   });
 
   it('非自由回合：手上无任何能压的牌时，明确提示只能 pass', () => {

@@ -17,10 +17,28 @@ import Modal from '@/components/common/Modal';
 import Select, { type SelectOption } from '@/components/common/Select';
 import { toast } from '@/components/common/Toast';
 import { cn } from '@/utils/cn';
+import { downloadTextFile, exportTimestamp } from '@/utils/download';
 import { formatDateTime, formatLatency, maskKeyForDisplay } from '@/utils/format';
 import type { ModelItem } from '@/types/api';
-import type { AIPlayer, ConnectionTestResult, ModelConfig, ThinkingMode } from '@/types/config';
-import { THINKING_LABELS, THINKING_MODES } from '@/types/config';
+import type {
+  AIPlayer,
+  ApiFormat,
+  ConnectionTestResult,
+  ModelConfig,
+  ThinkingCapability,
+  ThinkingMode,
+  ThinkingProfile,
+} from '@/types/config';
+import {
+  API_FORMATS,
+  API_FORMAT_LABELS,
+  THINKING_CAPABILITIES,
+  THINKING_CAPABILITY_LABELS,
+  THINKING_LABELS,
+  THINKING_MODES,
+  THINKING_PROFILES,
+  THINKING_PROFILE_LABELS,
+} from '@/types/config';
 import {
   DRAFT_KEY,
   EMPTY_CONFIG_INPUT,
@@ -58,11 +76,14 @@ interface ModelPickerProps {
   onToggle: (modelId: string) => void;
   /** 默认模型变化回调 */
   onDefaultChange: (modelId: string) => void;
+  /** 批量设置勾选集合（全选 / 取消全选），最终集合整体替换 */
+  onBulkSelect: (ids: string[]) => void;
 }
 
 /**
  * 可搜索、可多选的模型列表（REQ-M2）。
  * 勾选项写入 `availableModels`，其中一个被指定为 `selectedModel`。
+ * 全选 / 取消全选只作用于当前搜索命中的子集，便于先按关键字筛选再批量勾选。
  */
 function ModelPicker({
   models,
@@ -70,6 +91,7 @@ function ModelPicker({
   defaultModel,
   onToggle,
   onDefaultChange,
+  onBulkSelect,
 }: ModelPickerProps): JSX.Element {
   const [keyword, setKeyword] = useState<string>('');
 
@@ -82,6 +104,21 @@ function ModelPicker({
       (m: ModelItem): boolean => m.id.toLowerCase().includes(kw) || m.name.toLowerCase().includes(kw),
     );
   }, [models, keyword]);
+
+  /** 全选：把当前搜索命中的模型并入勾选集合（视图外的已勾选项保留） */
+  const handleSelectAll = (): void => {
+    const merged: Set<string> = new Set<string>(selectedIds);
+    for (const m of filtered) {
+      merged.add(m.id);
+    }
+    onBulkSelect([...merged]);
+  };
+
+  /** 取消全选：从勾选集合中移除当前搜索命中的模型（空搜索时即清空全部） */
+  const handleDeselectAll = (): void => {
+    const hit: Set<string> = new Set<string>(filtered.map((m: ModelItem): string => m.id));
+    onBulkSelect(selectedIds.filter((id: string): boolean => !hit.has(id)));
+  };
 
   const defaultOptions: SelectOption[] = useMemo(
     (): SelectOption[] => selectedIds.map((id: string): SelectOption => ({ value: id, label: id })),
@@ -138,9 +175,19 @@ function ModelPicker({
         )}
       </div>
 
-      <p className="text-xs text-slate-500">
-        已勾选 {selectedIds.length} / {models.length} 个模型
-      </p>
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs text-slate-500">
+          已勾选 {selectedIds.length} / {models.length} 个模型
+        </p>
+        <div className="flex flex-none gap-2">
+          <Button size="sm" variant="secondary" onClick={handleSelectAll} title="勾选当前搜索命中的全部模型">
+            全选
+          </Button>
+          <Button size="sm" variant="secondary" onClick={handleDeselectAll} title="取消勾选当前搜索命中的全部模型（清空搜索框即为全部）">
+            取消全选
+          </Button>
+        </div>
+      </div>
 
       <Select
         label="默认模型"
@@ -334,19 +381,9 @@ export function ModelConfigPage(): JSX.Element {
     toast.success('已导出脱敏配置（API Key 已打码），可安全分享');
   };
 
-  /** 生成并下载 JSON 文件 */
+  /** 生成并下载 JSON 文件（复用全局下载工具） */
   const downloadConfigJson = (json: string, prefix: string): void => {
-    const blob = new Blob([json], { type: 'application/json' });
-    const url: string = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    const d: Date = new Date();
-    const pad = (n: number): string => String(n).padStart(2, '0');
-    a.download = `${prefix}-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    downloadTextFile(json, `${prefix}-${exportTimestamp()}.json`, 'application/json');
   };
 
   /** 导入配置文件：校验后写回 localStorage，刷新页面生效 */
@@ -443,10 +480,21 @@ export function ModelConfigPage(): JSX.Element {
     });
   };
 
+  /** 批量设置勾选集合（全选 / 取消全选）：默认模型不在集合内时回落到集合第一个 */
+  const bulkSelectModels = (ids: string[]): void => {
+    setDraft((prev: ModelConfigInput): ModelConfigInput => {
+      const nextDefault: string = ids.includes(prev.selectedModel) ? prev.selectedModel : (ids[0] ?? '');
+      return { ...prev, availableModels: ids, selectedModel: nextDefault };
+    });
+  };
+
   /** 表单内点击「拉取模型」 P2：显式捕获未处理 rejection */
   const handleFetchModels = async (): Promise<void> => {
     try {
-      const models: ModelItem[] = await fetchModels({ baseUrl: draft.baseUrl, apiKey: draft.apiKey }, formKey);
+      const models: ModelItem[] = await fetchModels(
+        { baseUrl: draft.baseUrl, apiFormat: draft.apiFormat, apiKey: draft.apiKey },
+        formKey,
+      );
       if (models.length === 0) {
         return;
       }
@@ -467,7 +515,7 @@ export function ModelConfigPage(): JSX.Element {
   /** 表单内点击「连通性测试」（不写回任何已保存配置） */
   const handleTestDraft = async (): Promise<void> => {
     try {
-      await testConnection({ baseUrl: draft.baseUrl, apiKey: draft.apiKey }, formKey);
+      await testConnection({ baseUrl: draft.baseUrl, apiFormat: draft.apiFormat, apiKey: draft.apiKey }, formKey);
     } catch (err: unknown) {
       const msg: string = err instanceof Error ? err.message : String(err);
       toast.error(msg);
@@ -476,7 +524,7 @@ export function ModelConfigPage(): JSX.Element {
 
   /** 列表行点击「测试」（同样只读，不修改配置） */
   const handleTestSaved = async (config: ModelConfig): Promise<void> => {
-    await testConnection({ baseUrl: config.baseUrl, apiKey: config.apiKey }, config.id);
+    await testConnection({ baseUrl: config.baseUrl, apiFormat: config.apiFormat, apiKey: config.apiKey }, config.id);
   };
 
   /** 保存表单 */
@@ -678,7 +726,15 @@ export function ModelConfigPage(): JSX.Element {
             value={draft.baseUrl}
             onChange={(e) => patchDraft({ baseUrl: e.target.value })}
             placeholder="https://api.openai.com/v1"
-            hint="填写 OpenAI 兼容接口的根路径，通常以 /v1 结尾"
+            hint="服务根路径，通常以版本段结尾（OpenAI 兼容 /v1；Gemini /v1beta；Anthropic /v1，留空会自动补）"
+          />
+
+          <Select
+            label="API 协议格式"
+            options={API_FORMATS.map((f: ApiFormat): SelectOption => ({ value: f, label: API_FORMAT_LABELS[f] }))}
+            value={draft.apiFormat}
+            onChange={(e) => patchDraft({ apiFormat: e.target.value as ApiFormat })}
+            hint="默认 OpenAI 兼容；直连 Google Gemini（generativelanguage.googleapis.com）选 Gemini 原生、直连 Claude（api.anthropic.com）选 Anthropic 原生，思考档位与openai 完全一致。注意：TTS 语音目前仅支持 OpenAI 兼容格式"
           />
 
           <Input
@@ -723,6 +779,7 @@ export function ModelConfigPage(): JSX.Element {
             defaultModel={draft.selectedModel}
             onToggle={toggleModel}
             onDefaultChange={(modelId: string) => patchDraft({ selectedModel: modelId })}
+            onBulkSelect={bulkSelectModels}
           />
 
           {/* AI 思考模式与采样温度 */}
@@ -733,6 +790,43 @@ export function ModelConfigPage(): JSX.Element {
               value={draft.thinkingMode}
               onChange={(e) => patchDraft({ thinkingMode: e.target.value as ThinkingMode })}
               hint="自动：推理型模型（DeepSeek-R1 / QwQ / o 系列等）自动开启；关闭则纯快速回答；手动选低/中/高可显式控制推理强度"
+            />
+            <Select
+              label="思考方言（参数形状）"
+              options={THINKING_PROFILES.map((p: ThinkingProfile): SelectOption => ({
+                value: p,
+                label: THINKING_PROFILE_LABELS[p],
+              }))}
+              value={draft.thinkingProfile}
+              onChange={(e) => patchDraft({ thinkingProfile: e.target.value as ThinkingProfile })}
+              hint="各家关闭/开启思考的请求字段位置与形状不同且错误不报错。默认自动检测；若你的厂商思考关不掉/开不了，请对照厂商文档改选具体方言"
+            />
+            <Select
+              label="模型思考能力"
+              options={THINKING_CAPABILITIES.map((c: ThinkingCapability): SelectOption => ({
+                value: c,
+                label: THINKING_CAPABILITY_LABELS[c],
+              }))}
+              value={draft.thinkingCapability}
+              onChange={(e) => patchDraft({ thinkingCapability: e.target.value as ThinkingCapability })}
+              hint="部分模型只支持开/关（选低中高都会满血思考）：声明「仅开/关」可避免假分级；无思考能力的模型则完全不发思考参数"
+            />
+            <Input
+              label="输出上限 max_tokens（选填）"
+              type="number"
+              min={1}
+              step={1}
+              value={draft.maxTokens === null ? '' : String(draft.maxTokens)}
+              onChange={(e) => {
+                const raw: string = e.target.value;
+                if (raw.trim() === '') {
+                  patchDraft({ maxTokens: null });
+                  return;
+                }
+                const n: number = Number(raw);
+                patchDraft({ maxTokens: Number.isInteger(n) && n >= 1 ? n : null });
+              }}
+              hint="留空：思考开启时自动按档位抬预算（低 4096 / 中 8192 / 高 24576），关闭/未设置不发送；填写后始终以填写值为准（网关报 max_tokens 超上限 400 时，请填它家的天花板）"
             />
             <Input
               label="采样温度（0~2）"

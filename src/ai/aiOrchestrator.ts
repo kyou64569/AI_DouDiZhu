@@ -23,7 +23,7 @@ import {
 } from '@/types/ai';
 import type { ThinkingMode } from '@/types/config';
 import { DEFAULT_THINKING_MODE } from '@/types/config';
-import { chatCompletion, AI_TIMEOUT_MS } from '@/api/llm';
+import { chatCompletionStream, AI_TIMEOUT_MS } from '@/api/llm';
 import { toErrorMessage } from '@/api/client';
 import { validatePlay, type ValidationResult } from '@/engine/validator';
 import { hasPlayableHint, findHints } from '@/engine/hint';
@@ -54,6 +54,9 @@ export async function decidePlay(input: AIPlayInput): Promise<AIDecision> {
   try {
     return await runDecision(input, startedAt);
   } catch (error: unknown) {
+    // begin 已发生但 LLM try/catch 未必执行过（如 runDecision 前置逻辑抛出），
+    // 兜底出口必须 settle，否则思考面板卡「思考中」；settle 在无 live 时是安全 no-op
+    input.onThinkingSettled?.(false);
     const message: string = toErrorMessage(error);
     const safeHand: Card[] = Array.isArray((input as AIPlayInput | null | undefined)?.hand) ? (input as AIPlayInput).hand : [];
     const safeLastPlay = (input as AIPlayInput | null | undefined)?.lastPlay ?? null;
@@ -136,26 +139,34 @@ async function runDecision(input: AIPlayInput, startedAt: number): Promise<AIDec
     const thinkingMode: ThinkingMode = binding.thinkingMode ?? DEFAULT_THINKING_MODE;
     // 大师难度在用户未显式指定（auto）时升级为 high；显式设置始终优先
     const effectiveThinkingMode: ThinkingMode = resolveDifficultyThinking(binding.difficulty, thinkingMode);
-    const resolvedThinking = resolveThinking(binding.model, effectiveThinkingMode);
+    const resolvedThinking = resolveThinking(binding.model, effectiveThinkingMode, binding.thinkingCapability);
     // 超时已由 settingsStore.resolveTimeoutMs 按模式+思考态统一计算（人机 8s/思考 30s，观战 20s/思考 60s），此处直接使用
     const effectiveTimeoutMs: number = timeoutMs;
-    const response = await chatCompletion(
+    const response = await chatCompletionStream(
       {
         baseUrl: binding.baseUrl,
+        apiFormat: binding.apiFormat ?? 'openai',
         apiKey: binding.apiKey,
         model: binding.model,
         messages,
         // 难度覆盖温度：简单调高、困难/大师调低，普通沿用配置温度
         temperature: resolveDifficultyTemperature(binding.difficulty, binding.temperature),
-        thinking: resolvedThinking.thinking,
-        reasoningEffort: resolvedThinking.reasoningEffort,
+        thinkingLevel: resolvedThinking.level ?? undefined,
+        thinkingProfile: binding.thinkingProfile ?? 'auto',
+        maxTokens: binding.maxTokens ?? undefined,
         timeoutMs: effectiveTimeoutMs,
       },
-      { timeoutMs: effectiveTimeoutMs, signal: input.signal },
+      {
+        onThinking: (delta: string): void => input.onThinking?.(delta),
+        signal: input.signal,
+        timeoutMs: effectiveTimeoutMs,
+      },
     );
+    input.onThinkingSettled?.(true);
     content = response.content;
   } catch (error: unknown) {
     // ======== 第 0 层 · B：网络异常 / 8s 硬超时 ========
+    input.onThinkingSettled?.(false);
     const message: string = toErrorMessage(error);
     warnings.push(`LLM 请求失败：${message}`);
     return degrade(`模型请求失败（${message}）`, DecisionSource.FALLBACK_ERROR, 'error');

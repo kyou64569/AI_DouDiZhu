@@ -3,6 +3,9 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
+  "description": "AI 斗地主 —— 接入任意 OpenAI 兼容大模型的对战/观战游戏（网页版 + 桌面版）",
+  "author": "kyou64569",
+  "main": "out/main.mjs",
   "engines": {
     "node": ">=18"
   },
@@ -18,7 +21,37 @@
     "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test",
     "lint": "eslint . --ext ts,tsx",
-    "typecheck": "tsc -b"
+    "typecheck": "tsc -b",
+    "desktop:bundle": "esbuild desktop/main.ts --bundle --platform=node --format=esm --external:electron --outfile=out/main.mjs --log-level=warning && esbuild server/index.ts --bundle --platform=node --format=esm --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\" --outfile=out/server.mjs --log-level=warning",
+    "desktop:dev": "npm run desktop:bundle && concurrently -n web,api,desktop -c cyan,magenta,green \"vite\" \"tsx watch server/index.ts\" \"cross-env DESKTOP_DEV=1 electron .\"",
+    "desktop:build": "npm run build && npm run desktop:bundle && electron-builder --win"
+  },
+  "build": {
+    "appId": "com.kyou64569.aidoudizhu",
+    "productName": "AI斗地主",
+    "directories": {
+      "output": "desktop-release",
+      "buildResources": "desktop"
+    },
+    "files": [
+      "out/**",
+      "dist/**",
+      "package.json",
+      "!node_modules/**"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "desktop/icon.ico"
+    },
+    "portable": {
+      "artifactName": "AI斗地主-桌面版-${version}.exe"
+    }
   },
   "dependencies": {
     "clsx": "^2.1.1",
@@ -44,6 +77,9 @@
     "autoprefixer": "^10.4.20",
     "concurrently": "^9.1.0",
     "cross-env": "^7.0.3",
+    "electron": "^45.1.0",
+    "electron-builder": "^26.18.0",
+    "esbuild": "^0.28.2",
     "eslint": "^8.57.1",
     "eslint-plugin-react-hooks": "^4.6.2",
     "jsdom": "^30.0.1",

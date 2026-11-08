@@ -206,6 +206,24 @@ process.on('uncaughtException', (err: Error): void => {
 
 // P3 优雅关闭：等待在途请求完成（10s 超时强制退出），并清理 .apiport
 let httpServer: ReturnType<typeof app.listen> | null = null;
+
+/** 实际绑定成功的端口（未绑定时为 null） */
+let boundPort: number | null = null;
+
+/** 端口绑定成功监听器（Electron 桌面版注册；网页版流程不注册，行为不变） */
+const portBoundListeners: Array<(port: number) => void> = [];
+
+/**
+ * 注册端口绑定成功回调（Electron 桌面版用：感知端口被占自动跳号后的实际端口）。
+ * 若注册时端口已绑定（模块先于注册加载完成），立即以当前端口回调。
+ */
+export function onPortBound(listener: (port: number) => void): void {
+  if (boundPort !== null) {
+    listener(boundPort);
+    return;
+  }
+  portBoundListeners.push(listener);
+}
 function gracefulShutdown(signal: string): void {
   logger.info(MODULE, `收到 ${signal}，开始优雅关闭...`);
   if (httpServer) {
@@ -237,6 +255,10 @@ function startServer(initialPort: number): void {
   const tryBind = (): void => {
     const server = app.listen(currentPort, (): void => {
       httpServer = server;
+      boundPort = currentPort;
+      for (const listener of portBoundListeners) {
+        listener(currentPort);
+      }
       // 成功绑定后才写入 .apiport，避免 TOCTOU 问题
       syncPortFile(currentPort);
       logger.info(MODULE, 'Node 代理已启动', {
