@@ -24,7 +24,12 @@
     "typecheck": "tsc -b",
     "desktop:bundle": "esbuild desktop/main.ts --bundle --platform=node --format=esm --external:electron --outfile=out/main.mjs --log-level=warning && esbuild server/index.ts --bundle --platform=node --format=esm --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\" --outfile=out/server.mjs --log-level=warning",
     "desktop:dev": "npm run desktop:bundle && concurrently -n web,api,desktop -c cyan,magenta,green \"vite\" \"tsx watch server/index.ts\" \"cross-env DESKTOP_DEV=1 electron .\"",
-    "desktop:build": "npm run build && npm run desktop:bundle && electron-builder --win"
+    "patch:portable-splash": "node scripts/patch-portable-splash.mjs",
+    "check:splash-bmp": "node scripts/check-splash-bmp.mjs",
+    "make:splash-bmp": "electron scripts/make-splash-bmp.mjs",
+    "desktop:prebuild": "npm run build && npm run desktop:bundle && npm run check:splash-bmp && npm run patch:portable-splash",
+    "desktop:pack": "electron-builder --win",
+    "desktop:build": "npm run desktop:prebuild && npm run desktop:pack"
   },
   "build": {
     "appId": "com.kyou64569.aidoudizhu",
@@ -36,6 +41,9 @@
     "files": [
       "out/**",
       "dist/**",
+      "desktop/splash.html",
+      "desktop/splash-preload.cjs",
+      "desktop/icon.ico",
       "package.json",
       "!node_modules/**"
     ],
@@ -45,12 +53,22 @@
         {
           "target": "portable",
           "arch": ["x64"]
+        },
+        {
+          "target": "nsis",
+          "arch": ["x64"]
         }
       ],
       "icon": "desktop/icon.ico"
     },
     "portable": {
-      "artifactName": "AI斗地主-桌面版-${version}.exe"
+      "artifactName": "AI斗地主-桌面版-${version}.exe",
+      "splashImage": "desktop/splash.bmp"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "artifactName": "AI斗地主-安装版-${version}.exe"
     }
   },
   "dependencies": {

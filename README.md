@@ -25,7 +25,7 @@ npm start
 
 也可以直接双击 `start.bat`：自动检测环境、启动开发服务并打开浏览器（Windows）。
 
-**桌面版（exe）**：不想开命令行/浏览器的话，双击 `build-desktop.bat` 一键打包（自动处理依赖安装、国内镜像、产物预清理），产物为 `desktop-release/AI斗地主-桌面版-<版本>.exe`——单文件便携程序，双击即开游戏窗口（内嵌服务自动启动，与网页版同源同功能），无需安装 Node.js 运行时。构建细节见 `docs/桌面版.md`（本地文档，不入库）。
+**桌面版（exe）**：不想开命令行/浏览器的话，双击 `build-desktop.bat` 一键打包（自动处理依赖安装、国内镜像，先构建到临时目录、成功后才把 exe 复制到 `desktop-release`，因此打包失败不会丢掉上一次的成品），产物两份——`AI斗地主-安装版-<版本>.exe`（**推荐**：安装一次，之后桌面快捷方式启动）与 `AI斗地主-桌面版-<版本>.exe`（单文件便携，双击即用，适合拷贝/U 盘，启动需数秒自解压）。两者均内置启动画面：斗地主发牌动画 + 进度条实时显示内嵌服务与页面加载进度，主窗口就绪后自动消失、无缝进入游戏，无需安装 Node.js 运行时。构建细节见 `docs/桌面版.md`（本地文档，不入库）。
 
 ## 可用脚本
 
@@ -42,7 +42,11 @@ npm start
 | `npm run lint` | ESLint 检查 |
 | `npm run typecheck` | 仅做类型检查 |
 | `npm run desktop:dev` | 桌面版开发（Vite + Node 代理 + Electron 窗口） |
-| `npm run desktop:build` | 打包桌面版 exe 到 `desktop-release/` |
+| `npm run desktop:build` | 打包桌面版 exe 到 `desktop-release/`（先构建到临时目录，成功后复制） |
+| `npm run desktop:prebuild` | 打包前置链：typecheck + vite build + esbuild + splash 校验 + 便携壳模板补丁 |
+| `npm run desktop:pack` | 只跑 electron-builder 打包（前置产物已就绪时用，可加 `-- --config.directories.output=<dir>`） |
+| `npm run make:splash-bmp` | 重新生成解压期静态启动图（改了 `desktop/splash.html` 后必跑） |
+| `npm run check:splash-bmp` | 校验 `desktop/splash.bmp` 存在且未过期（`desktop:build` 自动执行） |
 
 ## 端口说明（端口占用自动跳转）
 

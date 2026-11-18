@@ -446,16 +446,19 @@ export function GameTablePage(): JSX.Element {
    * 底部手牌区。桌面与移动共用，仅牌面尺寸不同。
    *
    * 观战模式：顶部挂视角切换器；「三家全明」开启时纵向摊开三家手牌。
-   * 人机模式：行为与改造前完全一致（只渲染人类自己的手牌、可选牌）。
+   * 人机模式：对局进行中只渲染人类自己的手牌；进入 SETTLED 后摊开三家剩余手牌
+   *           （终局信息公开：否则结算后完全看不到对家还剩什么牌）。
    */
   const renderHandSection = (size: 'md' | 'sm'): JSX.Element => {
-    const seats: SeatIndex[] = isSpectator && spectateShowAll ? ([0, 1, 2] as SeatIndex[]) : [viewSeat];
+    const settled: boolean = phase === GamePhase.SETTLED;
+    const showAllHands: boolean = settled || (isSpectator && spectateShowAll);
+    const seats: SeatIndex[] = showAllHands ? ([0, 1, 2] as SeatIndex[]) : [viewSeat];
 
     return (
       <div className="glass-panel rounded-2xl px-3 py-2.5">
         {humanTurnBanner}
 
-        {isSpectator ? (
+        {isSpectator && !settled ? (
           <SpectatorSeatSwitcher
             players={players}
             viewSeat={viewSeat}
@@ -465,6 +468,16 @@ export function GameTablePage(): JSX.Element {
             onToggleShowAll={toggleSpectateShowAll}
             className="mb-2 border-b border-white/10 pb-2"
           />
+        ) : null}
+
+        {settled ? (
+          <div
+            className="mb-2 flex items-center justify-center gap-2 rounded-lg bg-white/[0.06] px-2 py-1 text-[11px] text-white/70"
+            role="status"
+          >
+            <span aria-hidden="true">🃏</span>
+            终局摊牌 · 三家剩余手牌
+          </div>
         ) : null}
 
         {seats.map((seat: SeatIndex) => {
@@ -479,10 +492,15 @@ export function GameTablePage(): JSX.Element {
                     </span>
                   ) : null}
                   <span className="truncate">{player.name}</span>
-                  {isSpectator && seat === currentSeat ? (
+                  {isSpectator && seat === currentSeat && !settled ? (
                     <span className="flex items-center gap-1 text-emerald-300">
                       <span className="h-1.5 w-1.5 animate-pulse-ring rounded-full bg-emerald-400" />
                       行动中
+                    </span>
+                  ) : null}
+                  {settled && player.hand.length === 0 ? (
+                    <span className="rounded bg-emerald-500/20 px-1.5 py-px text-[10px] leading-none text-emerald-300">
+                      已出完
                     </span>
                   ) : null}
                 </span>
@@ -490,13 +508,19 @@ export function GameTablePage(): JSX.Element {
                   剩 <span className="font-semibold text-white/85">{player.hand.length}</span> 张
                 </span>
               </div>
-              <HandCards
-                cards={player.hand}
-                selectedIds={seat === humanSeat ? selectedCardIds : []}
-                selectable={!isSpectator && seat === humanSeat}
-                onToggle={(id) => useGameStore.getState().toggleSelect(id)}
-                size={size}
-              />
+              {settled && player.hand.length === 0 ? (
+                <p className="rounded-xl border border-dashed border-white/20 bg-black/15 px-3 py-2 text-center text-xs text-white/50">
+                  （无剩余手牌）
+                </p>
+              ) : (
+                <HandCards
+                  cards={player.hand}
+                  selectedIds={!settled && seat === humanSeat ? selectedCardIds : []}
+                  selectable={!isSpectator && !settled && seat === humanSeat}
+                  onToggle={(id) => useGameStore.getState().toggleSelect(id)}
+                  size={size}
+                />
+              )}
             </div>
           );
         })}

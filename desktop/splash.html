@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>启动中</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; user-select: none; }
+  html, body { height: 100%; }
+  body {
+    /* 牌桌绿呢：径向渐变 + 暗角，模拟灯下的牌桌 */
+    background: radial-gradient(120% 120% at 50% 30%, #11563a 0%, #0b3d2a 45%, #06281b 100%);
+    overflow: hidden;
+    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    color: #d8e6d9;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid #1d6a47;
+  }
+
+  /* ---------- 发牌区：三张牌扇形展开，循环轻轻浮动 ---------- */
+  .table {
+    position: relative;
+    width: 240px;
+    height: 150px;
+    margin-bottom: 26px;
+    animation: float 3.2s ease-in-out infinite;
+  }
+  .card {
+    position: absolute;
+    left: 50%;
+    top: 14px;
+    width: 84px;
+    height: 120px;
+    border-radius: 10px;
+    background: linear-gradient(160deg, #ffffff 0%, #f4efe3 100%);
+    box-shadow: 0 12px 26px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(0, 0, 0, 0.06);
+    transform-origin: 50% 120%;
+    animation: deal 0.55s cubic-bezier(0.2, 1.4, 0.4, 1) both;
+  }
+  /* 三张牌的落位角度：斗(左) 地(中) 主(右)，中牌略抬形成扇面 */
+  .card.c1 { --r: -18deg; margin-left: -84px; animation-delay: 0.10s; }
+  .card.c2 { --r: 0deg;   margin-left: -42px; margin-top: -14px; animation-delay: 0.28s; z-index: 2; }
+  .card.c3 { --r: 18deg;  margin-left: 0;     animation-delay: 0.46s; }
+
+  @keyframes deal {
+    from { opacity: 0; transform: rotate(var(--r)) translateY(90px) scale(0.7); }
+    to   { opacity: 1; transform: rotate(var(--r)) translateY(0) scale(1); }
+  }
+  @keyframes float {
+    0%, 100% { transform: translateY(0); }
+    50%      { transform: translateY(-7px); }
+  }
+
+  /* 牌面：角标花色 + 中央大字 */
+  .suit { position: absolute; top: 6px; left: 9px; font-size: 17px; line-height: 1; }
+  .suit.b { color: #232323; }
+  .suit.r { color: #cf3049; }
+  .big {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 46px;
+    font-weight: 700;
+    color: #1c2b22;
+    letter-spacing: 0;
+  }
+  .card.c2 .big, .card.c3 .big { color: #8e1f31; }
+
+  /* ---------- 标题与进度 ---------- */
+  .title {
+    font-size: 26px;
+    font-weight: 700;
+    letter-spacing: 6px;
+    color: #f2c35a;
+    text-shadow: 0 2px 10px rgba(0, 0, 0, 0.45);
+    margin-bottom: 4px;
+  }
+  .subtitle {
+    font-size: 12px;
+    letter-spacing: 2px;
+    color: #7fa98d;
+    margin-bottom: 22px;
+  }
+  .bar {
+    width: 300px;
+    height: 10px;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.38);
+    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.5);
+    overflow: hidden;
+  }
+  .bar-fill {
+    height: 100%;
+    width: 6%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, #e8a020, #f7c948 60%, #ffe08a);
+    box-shadow: 0 0 10px rgba(247, 201, 72, 0.55);
+    transition: width 0.4s ease;
+  }
+  .row {
+    width: 300px;
+    display: flex;
+    justify-content: space-between;
+    margin-top: 10px;
+    font-size: 12px;
+    color: #9dbfa9;
+  }
+  #phase { letter-spacing: 1px; }
+  #pct { font-variant-numeric: tabular-nums; color: #f2c35a; }
+  .version {
+    position: absolute;
+    right: 12px;
+    bottom: 8px;
+    font-size: 10px;
+    color: #547d64;
+  }
+</style>
+</head>
+<body>
+  <div class="table">
+    <div class="card c1"><span class="suit b">♠</span><span class="big">斗</span></div>
+    <div class="card c2"><span class="suit r">♥</span><span class="big">地</span></div>
+    <div class="card c3"><span class="suit b">♣</span><span class="big">主</span></div>
+  </div>
+
+  <div class="title">AI 斗地主</div>
+  <div class="subtitle"> SINGLE PLAYER · AI BATTLE </div>
+
+  <div class="bar"><div class="bar-fill" id="fill"></div></div>
+  <div class="row"><span id="phase">正在启动…</span><span id="pct">6%</span></div>
+  <div class="version" id="ver"></div>
+
+<script>
+  (function () {
+    var fill = document.getElementById('fill');
+    var phase = document.getElementById('phase');
+    var pct = document.getElementById('pct');
+    var ver = document.getElementById('ver');
+    var v = new URLSearchParams(location.search).get('v');
+    if (v) { ver.textContent = 'v' + v; }
+
+    var shown = 6; // 当前展示值，只涨不跌（阶段事件可能乱序/回退）
+    function setProgress(percent, label) {
+      var p = Math.max(shown, Math.min(100, Math.round(percent)));
+      shown = p;
+      fill.style.width = p + '%';
+      pct.textContent = p + '%';
+      if (label) { phase.textContent = label; }
+    }
+
+    // 正式路径：主进程经 preload 桥按阶段推送进度（contextIsolation 安全暴露）
+    var bridge = window.doudizhuSplash;
+    if (bridge && typeof bridge.onProgress === 'function') {
+      bridge.onProgress(function (payload) {
+        setProgress(payload.percent, payload.label);
+      });
+      return;
+    }
+
+    // 兜底/浏览器预览路径：没有 IPC 桥时按时间自走（启动窗寿命短，误差可接受）
+    var demoValue = 6;
+    var demoLabels = [
+      [30, '正在启动内嵌服务…'],
+      [62, '正在连接对局服务…'],
+      [88, '正在加载界面资源…']
+    ];
+    var i = 0;
+    var timer = setInterval(function () {
+      if (i >= demoLabels.length) { clearInterval(timer); return; }
+      demoValue = demoLabels[i][0];
+      setProgress(demoLabels[i][0], demoLabels[i][1]);
+      i += 1;
+    }, 1000);
+  })();
+</script>
+</body>
+</html>

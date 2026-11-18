@@ -10,6 +10,11 @@ build/
 out/
 release/
 desktop-release/
+desktop-release-*/
+desktop-release.build*
+
+# 本机应急工具（等 WorkBuddy 退出后清理被锁的构建残留），不入库
+/clean-build-junk.bat
 .tsbuild/
 *.tsbuildinfo
 
